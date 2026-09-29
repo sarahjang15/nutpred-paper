@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nutpred"
+version = "0.3.0"
+description = "Predict Calcium/Fiber/Iron from ingredients + nutrients via ML and convex optimization."
+readme = "README.md"
+requires-python = ">=3.9"
+# No license is declared and no LICENSE file ships; see README.md.
+# TODO(release): replace before submission -- these are placeholders.
+authors = [
+  { name = "TODO Author Name", email = "todo@example.invalid" }
+]
+keywords = ["nutrition", "ingredients", "xgboost", "cvxpy", "optimization", "machine-learning"]
+
+dependencies = [
+  "numpy>=1.23,<3",
+  "pandas>=2.0,<3",
+  "scikit-learn>=1.3,<2",
+  "matplotlib>=3.7,<4",
+  "cvxpy>=1.4,<2",
+  "osqp>=0.6,<2",
+  "openpyxl>=3.1,<4",
+  "pyyaml>=6.0,<7",
+  "optuna>=3.6,<5",
+  "seaborn>=0.12,<1",
+  "xgboost>=1.7,<4",
+  "scipy>=1.10,<2"
+]
+
+[project.scripts]
+nutpred-build-features = "nutpred.build_ingredient_features:main"
+
+[project.optional-dependencies]
+# Required for --shap: pip install ".[shap]"
+shap = ["shap>=0.44,<1"]
+
+# Rebuilding UMAP ingredient embeddings: pip install ".[embeddings]"
+embeddings = ["umap-learn>=0.5", "openai>=1.0", "torch>=2.0", "transformers>=4.30"]
+
+# Optional alternative convex solvers (choose any you plan to use)
+clarabel = ["clarabel>=0.7"]
+scs = ["scs>=3.2"]
+ecos = ["ecos>=2.0"]
+piqp = ["piqp>=0.3"]
+
+# Dev helpers: pip install ".[dev]"
+dev = [
+  "pytest>=7",
+  "ruff>=0.4",
+  "black>=24.3",
+  "ipykernel>=6",
+]
+
+[project.urls]
+Homepage = "https://github.com/sarahjang15/nutpred"
+Repository = "https://github.com/sarahjang15/nutpred"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nutpred*"]

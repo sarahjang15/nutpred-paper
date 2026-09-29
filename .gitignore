@@ -1,0 +1,75 @@
+# --- Credentials -------------------------------------------------------
+# Globs, not exact names. The previous repo listed `api_key.txt` literally,
+# which left api_key.txt.bak-* and mfds_api_key3/4.txt tracked by default.
+*api_key*
+*apikey*
+*_key.txt
+*.key
+*.pem
+.env
+.env.*
+*secret*
+*credential*
+
+# --- Data --------------------------------------------------------------
+# No real food data ships with this repository. Users supply their own via
+# --food-df / --thesaurus-df / --ingnut-df. Only the synthetic examples in
+# data/example/ and the generator that writes them are tracked.
+data/*
+!data/example/
+!data/make_example_data.py
+!data/README.md
+
+# USDA FoodData Central bulk exports, wherever they are placed
+food.csv
+branded_food.csv
+food_nutrient.csv
+nutrient.csv
+FoodData_Central_*
+
+# --- Run outputs -------------------------------------------------------
+test_*/
+complete_*/
+nutpred_outputs*/
+outputs/
+logs/
+*.log
+nohup.out
+
+# Figures and results are not distributed with the code, with one exception:
+# the architecture diagram is documentation and is tracked.
+figures/
+*.png
+!docs/architecture.png
+*.pdf
+*.pptx
+
+# --- Python ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.ipynb
+
+# --- Editors / OS ------------------------------------------------------
+.cursor/
+.claude/
+.vscode/
+.idea/
+.DS_Store
+desktop.ini
