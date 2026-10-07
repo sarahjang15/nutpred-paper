@@ -413,10 +413,10 @@ def fit_umap_list_columns(
 # Ingredient embedding -> UMAP columns, in one call
 # ---------------------------------------------------------------------------
 
-DEFAULT_EMBED_PROMPT = (
-    "Ingredients listed in descending order by quantity (from most to least); "
-    "parentheses indicate sub-ingredients: "
-)
+# The text each ingredient statement is wrapped in before it is embedded. This
+# exact wording produced the reported embeddings, so changing it changes every
+# feature built from them: edit it only alongside a re-embedding of the corpus.
+DEFAULT_EMBED_PROMPT = "This food contains ingredients in order of quantity: "
 
 
 def build_embedding_columns(
