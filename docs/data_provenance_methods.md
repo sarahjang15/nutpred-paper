@@ -7,7 +7,7 @@ against the releases currently listed at <https://fdc.nal.usda.gov/download-data
 
 ---
 
-## 1. Paste-ready Methods text (JFCA style)
+## 1. Paste-ready Methods text
 
 ### 2.1.1. USDA FoodData Central Global Branded Food Products Database
 

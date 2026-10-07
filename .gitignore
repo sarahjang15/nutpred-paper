@@ -36,11 +36,9 @@ logs/
 *.log
 nohup.out
 
-# Figures and results are not distributed with the code, with one exception:
-# the architecture diagram is documentation and is tracked.
+# Figures and results are not distributed with the code.
 figures/
 *.png
-!docs/architecture.png
 *.pdf
 *.pptx
 
