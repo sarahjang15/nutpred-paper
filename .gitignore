@@ -36,9 +36,11 @@ logs/
 *.log
 nohup.out
 
-# Figures and results are not distributed with the code.
+# Figures and results are not distributed with the code, with one exception:
+# the ingredient-feature diagram is documentation and is tracked.
 figures/
 *.png
+!docs/figure2.png
 *.pdf
 *.pptx
 

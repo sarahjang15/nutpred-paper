@@ -4,6 +4,8 @@ Code for **"[Paper title]"** ([Author names], *Journal of Food Composition and A
 
 nutpred predicts the **calcium, dietary fiber and iron** content of packaged foods from information already on the label: the macronutrient panel and the ingredient list.
 
+![How an ingredient statement becomes the three feature blocks: cleaning and tokenization, selection of the 100 most frequent ingredients, then embedding, binary and positional-score features](docs/figure2.png)
+
 ## Overview
 
 Features are built from:
@@ -70,7 +72,7 @@ nutpred/
   prepare.py                            FoodData Central processing and embeddings
   viz.py                                plots and SHAP analysis
 data/                                   input schema and synthetic examples
-docs/                                   data provenance
+docs/                                   ingredient-feature diagram, data provenance
 tests/                                  unit tests (pytest)
 ```
 
