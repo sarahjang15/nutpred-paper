@@ -7,7 +7,10 @@ from collections import Counter
 from nutpred.cleaning import clean_ingredient_text
 import pandas as pd
 from sklearn.preprocessing import MultiLabelBinarizer 
+import numpy as np
 import nutpred.constants as C
+from nutpred.prepare import filter_valid_nutrition_data  # noqa: F401  (re-exported)
+from nutpred.split import assign_train_test, TRAIN
 
 logger = logging.getLogger(__name__)
 
@@ -24,85 +27,6 @@ def make_id_col(food_df: pd.DataFrame) -> pd.DataFrame:
     food_df['id_col'] = food_df.index.astype(str)
     return food_df
 
-def filter_valid_nutrition_data(df):
-    """
-    Filter out rows with invalid nutrition data based on validation rules.
-    
-    Returns:
-        DataFrame: Filtered DataFrame with only valid rows
-    """
-    valid_indices = []
-    
-    for idx, row in df.iterrows():
-        is_valid = True
-        
-        # 1) 에너지가 > 1,080 kcal 초과인 경우
-        if pd.notna(row["Energy(kcal)"]) and row["Energy(kcal)"] >= 0:
-            if row["Energy(kcal)"] > 1080:
-                is_valid = False
-                continue
-        
-        # 2) 에너지가 (탄수화물, 단백질, 지방으로 산출한 에너지) 20% 초과인 경우
-        if ((pd.notna(row["Energy(kcal)"]) and row["Energy(kcal)"] >= 0) and 
-            (pd.notna(row["Carbohydrate(g)"]) and row["Carbohydrate(g)"] >= 0) and
-            (pd.notna(row["Protein(g)"]) and row["Protein(g)"] >= 0) and
-            (pd.notna(row["Total fat(g)"]) and row["Total fat(g)"] >= 0)):
-            calculated_energy = (
-                (row["Carbohydrate(g)"] if pd.notna(row["Carbohydrate(g)"]) else 0) * 4 +
-                (row["Total fat(g)"] if pd.notna(row["Total fat(g)"]) else 0) * 9 +
-                (row["Protein(g)"] if pd.notna(row["Protein(g)"]) else 0) * 4
-            )
-            lower_bound = calculated_energy * 0.8
-            upper_bound = calculated_energy * 1.2
-            if not (lower_bound <= row["Energy(kcal)"] <= upper_bound):
-                is_valid = False
-                continue
-        
-        # 3) 지방, 포화지방, 트랜스지방 이상치 검토
-        # 3-1) 포화지방산 > 지방 인 경우
-        if (pd.notna(row["Total fat(g)"]) and row["Total fat(g)"] >= 0) and (pd.notna(row["Saturated fatty acids(g)"]) and row["Saturated fatty acids(g)"] >= 0):
-            if row["Total fat(g)"] < row["Saturated fatty acids(g)"]:
-                is_valid = False
-                continue
-        
-        # 3-2) 트랜스지방산 > 지방 인 경우
-        if (pd.notna(row["Total fat(g)"]) and row["Total fat(g)"] >= 0) and (pd.notna(row["Trans fatty acids(g)"]) and row["Trans fatty acids(g)"] >= 0):
-            if row["Total fat(g)"] < row["Trans fatty acids(g)"]:
-                is_valid = False
-                continue
-        
-        # 3-3) '지방' < ('포화지방산'+'트랜스지방산'+'콜레스테롤/1000') 인 경우
-        if pd.notna(row["Total fat(g)"]) and row["Total fat(g)"] >= 0:
-            trans_fat = row["Trans fatty acids(g)"] if pd.notna(row["Trans fatty acids(g)"]) else 0
-            sat_fat = row["Saturated fatty acids(g)"] if pd.notna(row["Saturated fatty acids(g)"]) else 0
-            cholesterol = row["Cholesterol(mg)"] / 1000 if pd.notna(row["Cholesterol(mg)"]) else 0
-            
-            total_fat = trans_fat + sat_fat + cholesterol
-            
-            if total_fat > row["Total fat(g)"]:
-                is_valid = False
-                continue
-        
-        # 4) 탄수화물, 지방, 단백질 이상치 검토: ('100g 당 탄수화물'+ '100g당 단백질'+ '100g당 지방') ≤ 100
-        total_macros = sum([
-            row["Carbohydrate(g)"] if pd.notna(row["Carbohydrate(g)"]) else 0,
-            row["Total fat(g)"] if pd.notna(row["Total fat(g)"]) else 0,
-            row["Protein(g)"] if pd.notna(row["Protein(g)"]) else 0
-        ])
-        
-        if total_macros >= 100.0001:
-            is_valid = False
-            continue
-        
-        if is_valid:
-            valid_indices.append(idx)
-        
-    df = df.loc[valid_indices]
-    df = df[['fdc_id', 'branded_food_category', 'brand_owner', 'market_country', 'description', 'ingredients', 'Energy(kcal)', 'Protein(g)', 'Total fat(g)', 'Carbohydrate(g)', 'Total sugar(g)', 'Saturated fatty acids(g)', 'Cholesterol(mg)', 'Sodium(mg)', 'Fiber(g)', 'Calcium(mg)', 'Iron(mg)']]
-    df.reset_index(drop=True, inplace=True).dropna(inplace=True)
-    return df
-
-
 def ensure_mapped_list_column(
     food_df: pd.DataFrame,
     thesaurus: pd.DataFrame,
@@ -114,10 +38,9 @@ def ensure_mapped_list_column(
     Accepts either a raw 'ingredients' string or a pre-existing 'ingredient_list'.
 
     ``ingredient_cap`` truncates each label to its first N ingredients before
-    mapping; ``None`` or 0 keeps the whole list. The default 20 is the historical
-    behaviour and matches replication.constants.MAX_INGREDIENTS, so both
-    pipelines cap identically. Uncapping recovers 5.7% of ingredient mentions and
-    changes 10.1% of snack foods (1,418 of 14,019 list more than 20).
+    mapping; ``None`` or 0 keeps the whole list. The default 20 is the reported
+    setting. On the reported snack cohort, uncapping recovers 5.7% of ingredient
+    mentions and changes 10.1% of foods (1,418 of 14,019 list more than 20).
 
     Note that the ``*_top20`` column names are kept when uncapped -- they are
     referenced across the codebase -- but they then describe the full list, and
@@ -355,12 +278,6 @@ def filter_ingredients_to_topk(food_df: pd.DataFrame, top_list: List[str]) -> pd
 
 
 
-# Curated ingnut tables do not share one schema: data/ingnut_df_top100.csv ships
-# simplified column names, while the top135/top200/_derived lineage uses the
-# SR-style names INGNUT_MAPPING expects. Normalize so either can be passed.
-
-
-
 # Create first_mapped filter
 def is_first_mapped(row):
     # Check if the first ingredient from ingredient_list_top20 is properly mapped and in top-k
@@ -437,12 +354,47 @@ def build_binary_and_scores(food_df: pd.DataFrame, top_list: List[str], max_scor
     logger.info(f"Created {len(binary_df.columns)} binary features and {len(score_df.columns)} score features")
     return binary_df, score_df
 
+_NUMPY_SCALAR_REPR = re.compile(r"np\.\w+\(([^()]*)\)")
+
+
+def parse_vector_cell(v) -> Optional[List[float]]:
+    """One embedding cell -> list of floats, or None if it holds no vector.
+
+    Cells are written as ``"[1.0, 2.0, ...]"``. Under NumPy >= 2,
+    ``str(list(array))`` writes ``"[np.float64(1.0), ...]"`` instead; that form
+    is accepted too, so such files still parse.
+    """
+    if isinstance(v, (list, tuple, np.ndarray)):
+        return [float(x) for x in v]
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return None
+    text = _NUMPY_SCALAR_REPR.sub(r"\1", str(v)).strip()
+    if not text.strip("[] "):
+        return None
+    try:
+        parsed = ast.literal_eval(text)
+        if isinstance(parsed, (list, tuple)):
+            return [float(x) for x in parsed]
+    except (ValueError, SyntaxError, TypeError):
+        pass
+    try:
+        return [float(x) for x in text.strip("[]").split(",")]
+    except ValueError:
+        raise ValueError(f"cannot parse embedding cell {str(v)[:80]!r}") from None
+
+
 def _expand_umap_list_column(
     food_df: pd.DataFrame, base: str, expected_dim: int
 ) -> None:
     """
     If `base` (e.g. 'umap_10') exists as a list-like column and no `base_i` numeric
     columns exist yet, expand in place into base_1..base_{expected_dim}.
+
+    A cell with no vector (empty or NaN), or with the wrong number of values
+    (a malformed or column-shifted row), becomes NaN in every column -- the
+    model's train-median imputer fills it -- rather than a silent vector of
+    zeros, and is reported in a warning. Text that is not a vector at all is
+    an error.
     """
     if expected_dim <= 0:
         return
@@ -452,29 +404,27 @@ def _expand_umap_list_column(
     if base not in food_df.columns:
         return
 
-    def parse_cell(v):
-        if isinstance(v, (list, tuple)):
-            return list(v)
-        if isinstance(v, str):
-            try:
-                arr = ast.literal_eval(v)
-                if isinstance(arr, (list, tuple)):
-                    return list(arr)
-            except Exception:
-                pass
-            v2 = v.strip().strip("[]")
-            if not v2:
-                return [0.0] * expected_dim
-            try:
-                return [float(x) for x in v2.split(",")]
-            except Exception:
-                return [0.0] * expected_dim
-        return [0.0] * expected_dim
-
-    arrs = food_df[base].apply(parse_cell).tolist()
-    arrs = [a[:expected_dim] + [0.0] * max(0, expected_dim - len(a)) for a in arrs]
+    arrs = [parse_vector_cell(v) for v in food_df[base]]
+    wrong = [i for i, a in enumerate(arrs) if a is not None and len(a) != expected_dim]
+    if wrong:
+        logger.warning(
+            "%s: %d row(s) hold %s values instead of %d -- likely malformed or "
+            "column-shifted rows; check them in the input (row positions %s). Left as NaN.",
+            base, len(wrong), sorted({len(arrs[i]) for i in wrong}), expected_dim, wrong[:10],
+        )
+        if len(wrong) > 0.05 * len(arrs):
+            raise ValueError(
+                f"{base}: {len(wrong)} of {len(arrs)} cells do not hold {expected_dim} "
+                f"values; is this the right column / dimensionality?"
+            )
+    n_missing = sum(a is None for a in arrs)
+    for i in wrong:
+        arrs[i] = None
+    if n_missing:
+        logger.warning("%s: %d row(s) have no embedding; left as NaN", base, n_missing)
+    mat = np.array([a if a is not None else [np.nan] * expected_dim for a in arrs], dtype=float)
     for i in range(expected_dim):
-        food_df[f"{base}_{i+1}"] = [a[i] for a in arrs]
+        food_df[f"{base}_{i+1}"] = mat[:, i]
 
 
 def ensure_umap_columns(food_df: pd.DataFrame, expected_dim: int = 10) -> pd.DataFrame:
@@ -638,11 +588,15 @@ def preprocess_pipeline(
             zscore_threshold=outlier_zscore,
         )
 
-    # Step 5: Create binary/score features from resolved ingredients
-    binary_df, score_df = build_binary_and_scores(food_df, top_list)
-    
-    # Step 6: Join features to food_df dataframe
-    food_df = food_df.join(binary_df).join(score_df)
+    # Step 5: binary/score features. A table that already carries them (built
+    # by `python -m nutpred.build_ingredient_features`, e.g. with a train-only
+    # vocabulary) keeps its own; otherwise they are built here on the ingnut
+    # table's `ing` vocabulary.
+    if any(c.startswith(("binary_", "score_")) for c in food_df.columns):
+        logger.info("Using the binary_/score_ blocks already in the input; not rebuilding them.")
+    else:
+        binary_df, score_df = build_binary_and_scores(food_df, top_list)
+        food_df = food_df.join(binary_df).join(score_df)
     
     logger.info("Completed ingredient preprocessing.")
     return food_df
@@ -688,15 +642,17 @@ def rank_vocabulary(
     food_df: pd.DataFrame,
     k: int,
     scope: str = "all",
-    split_col: str = "data_type",
+    train_mask: Optional[np.ndarray] = None,
+    seed: int = 42,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Frequency-rank the top-``k`` mapped ingredients, over all rows or train only.
 
-    ``scope="train"`` ranks over ``split_col == "train"`` rows only. Ranking over
-    every row lets test-set ingredient frequency decide which features exist,
-    which is the same class of leak that fitting UMAP on all rows would be; the
-    train-only scope matches the train-fit/test-transform discipline used for
-    the embedding.
+    ``scope="train"`` ranks over the train rows only. Those are ``train_mask``
+    if given, otherwise the train rows of :func:`nutpred.split.assign_train_test`
+    (seed ``seed``) -- the same rows run.py trains on when it is given the same
+    table. Ranking over every row lets test-set ingredient frequency decide
+    which features exist, which is the same class of leak that fitting UMAP on
+    all rows would be.
 
     Returns the vocabulary and an audit dict, which reports the overlap between
     the train-only and all-rows vocabularies so the size of the leak can be
@@ -708,14 +664,11 @@ def rank_vocabulary(
     audit: Dict[str, Any] = {"scope": scope, "k": k, "n_rows": len(food_df)}
 
     if scope == "train":
-        if split_col not in food_df.columns:
-            raise KeyError(
-                f"scope='train' needs a split column {split_col!r}; the frame has "
-                f"none. Pass split_col=, or use scope='all'."
-            )
-        mask = food_df[split_col].astype(str).str.lower().eq("train")
-        if not mask.any():
-            raise ValueError(f"no rows with {split_col} == 'train'")
+        if train_mask is None:
+            train_mask = (assign_train_test(food_df, seed=seed) == TRAIN).to_numpy()
+        mask = np.asarray(train_mask, dtype=bool)
+        if mask.shape[0] != len(food_df) or not mask.any():
+            raise ValueError("train_mask must flag at least one row and match the frame length")
         ranked_on = food_df.loc[mask]
         audit["n_train_rows"] = int(mask.sum())
     else:
@@ -772,7 +725,8 @@ def build_ingredient_feature_blocks(
     top_k: int = 100,
     top_list: Optional[List[str]] = None,
     vocab_scope: str = "all",
-    split_col: str = "data_type",
+    train_mask: Optional[np.ndarray] = None,
+    seed: int = 42,
     ingredient_cap: Optional[int] = 20,
     max_score: int = 20,
     exact_k: bool = True,
@@ -786,7 +740,8 @@ def build_ingredient_feature_blocks(
         table). When given, ``top_k`` and ``vocab_scope`` are ignored and the
         vocabulary is used as supplied.
     vocab_scope
-        ``"all"`` or ``"train"``; see :func:`rank_vocabulary`.
+        ``"all"`` or ``"train"``; see :func:`rank_vocabulary`. ``train_mask``
+        and ``seed`` are passed through to it.
     exact_k
         Force the binary block onto the full vocabulary index, so an ingredient
         that never occurs still gets an explicit all-zero column. Without this
@@ -808,7 +763,7 @@ def build_ingredient_feature_blocks(
     info: Dict[str, Any] = {"thesaurus_match": thesaurus_match_report(df)}
 
     if top_list is None:
-        top_list, audit = rank_vocabulary(df, top_k, scope=vocab_scope, split_col=split_col)
+        top_list, audit = rank_vocabulary(df, top_k, scope=vocab_scope, train_mask=train_mask, seed=seed)
         info.update(audit)
     else:
         top_list = list(dict.fromkeys(str(x).upper().strip() for x in top_list))
@@ -830,46 +785,3 @@ def build_ingredient_feature_blocks(
     info["constant_zero_binary"] = int((binary_df != 0).sum().eq(0).sum())
     info["constant_zero_score"] = int((score_df != 0).sum().eq(0).sum())
     return df, binary_df, score_df, info
-
-
-# ---------------------------------------------------------------------------
-# Resolving ingredient tokens onto the ingnut reference vocabulary
-# ---------------------------------------------------------------------------
-# Resolve GPT-parsed ingredient descriptors to the ingnut top-N nutrient vocabulary.
-#
-# Resolution order for one ingredient token:
-#
-# 1. **Exact match** against the vocab (``top_set``).
-# 2. **Thesaurus match**: look the raw token up in
-#    ``THESAURUSFORPUBLICRELEASE.XLSX`` ("Parsed ingredient term" -> "Preferred
-#    descriptor"); if the resolved descriptor is in the vocab, use it.
-# 3. **Hierarchical parent-category fallback**: USDA-style descriptors are a
-#    comma-separated hierarchy, general -> specific (e.g.
-#    ``OIL, VEGETABLE, PALM OLEIN``). If neither of the above matched, strip
-#    trailing comma-qualifiers one at a time and check each shorter prefix
-#    against the vocab. A candidate parent is accepted **only if verified
-#    empirically**: the specific descriptor's own Ca/Fe/Fiber values (looked up
-#    in the fuller ingnut reference tables) must be within ``fallback_tolerance``x
-#    of the parent's values (the ones that would actually be substituted in).
-#
-#    Moisture-changing qualifiers routinely fail this check and are correctly
-#    left unmatched rather than guessed, e.g.:
-#      - ``CARROT, DRIED`` vs ``CARROT``: Ca 6.4x, Iron 13.1x, Fiber 8.4x off.
-#      - ``POTATO FLOUR`` vs ``POTATO``: Ca 7.2x, Iron 2.7x, Fiber 2.5x off.
-#    Pure-fat qualifiers are usually safe, e.g.:
-#      - ``OIL, VEGETABLE, CANOLA, SOYBEAN`` vs ``OIL, VEGETABLE``: identical.
-#    When there's no reference row for the specific descriptor at all (can't
-#    verify either way), the token is left unmatched rather than assumed safe.
-
-
-
-
-
-
-
-
-
-
-
-
-

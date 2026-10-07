@@ -14,15 +14,17 @@ thesaurus mapping and vocabulary, so asking for both costs no more than one.
 
 ``--embed`` calls the OpenAI embeddings API. Only DISTINCT ingredient strings
 are sent, and results are cached to ``data/embedding_cache``, so a re-run is
-free; it still needs ``OPENAI_API_KEY`` (or ``--api-key``) the first time.
+free; the first run needs your own key, via ``--api-key-file`` (a file whose
+first line is the key) or the ``OPENAI_API_KEY`` environment variable.
 
-A NOTE ON THE SPLIT. ``--embed`` fits UMAP over every row it is given. The
-reported pipeline fits on train rows only and transforms test through that
-same reducer. Reducing a frame that still contains test rows, and splitting
-afterwards, leaks test structure into the representation -- so build the
-embedding on your train rows and project test through the fitted reducer,
-rather than running this over a combined frame. ``--vocab-scope train`` does
-the equivalent for the binary/score vocabulary.
+THE SPLIT. This tool computes the same train/test split run.py makes
+(nutpred.split: 80/20, ``--random-state``, stratified on the targets' zero
+pattern) -- it does not read one from the input. ``--embed`` fits UMAP on the
+train rows and projects every other row through the fitted reducer, and
+``--vocab-scope train`` ranks the vocabulary on the train rows, so neither sees
+test data. The split is written to the output as ``SampleType``; run.py
+recomputes it and warns if it no longer matches (e.g. after
+``--exclude-values``). Run this on the same table you pass to run.py.
 
 Run it as a module::
 
@@ -48,6 +50,7 @@ Ingredient blocks only, vocabulary taken from the ingnut reference table::
 The embedding dimensionality ablation::
 
     python -m nutpred.build_ingredient_features --embed \\
+      --api-key-file ~/my_openai_key.txt \\
       --embed-dims 2,10,20 --out-csv data/model_input_umap.csv
 """
 from __future__ import annotations
@@ -59,8 +62,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from nutpred.prepare import DEFAULT_MODEL, build_embedding_columns
+from nutpred.prepare import (
+    DEFAULT_CACHE_DIR, DEFAULT_MODEL, DEFAULT_UMAP_DIMS, UMAP_MIN_DIST, UMAP_N_NEIGHBORS, build_embedding_columns,
+)
 from nutpred.preprocess import build_ingredient_feature_blocks
+from nutpred.split import SPLIT_COL, TRAIN, assign_train_test
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -108,8 +114,6 @@ def main() -> None:
     voc.add_argument("--vocab-csv", type=Path, default=None,
                      help="take the vocabulary from this table's 'ing' column "
                           "instead of ranking by corpus frequency")
-    voc.add_argument("--split-col", default="data_type",
-                     help="train/test marker, for --vocab-scope train")
     voc.add_argument("--ingredient-cap", type=int, default=20,
                      help="keep only the first N parsed ingredients; 0 disables")
     voc.add_argument("--max-score", type=int, default=20,
@@ -118,15 +122,23 @@ def main() -> None:
                      help="do not pad the binary block to the full vocabulary width")
 
     emb = ap.add_argument_group("embedding (--embed)")
-    emb.add_argument("--embed-dims", type=str, default="20",
+    emb.add_argument("--embed-dims", type=str, default=",".join(map(str, DEFAULT_UMAP_DIMS)),
                      help="UMAP dimensionalities, comma-separated (default 20, "
                           "the reported setting)")
     emb.add_argument("--embed-model", type=str, default=DEFAULT_MODEL)
-    emb.add_argument("--api-key", type=str, default=None,
-                     help="falls back to the OPENAI_API_KEY environment variable")
+    emb.add_argument("--api-key-file", type=Path, default=None,
+                     help="file whose first line is your OpenAI key; falls back to the "
+                          "OPENAI_API_KEY environment variable. Needed only on a cache miss.")
     emb.add_argument("--ingredient-col", type=str, default="ingredients",
                      help="column holding the raw ingredient text")
-    emb.add_argument("--random-state", type=int, default=42)
+    emb.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR,
+                     help="where embeddings are cached (default data/embedding_cache)")
+    emb.add_argument("--umap-neighbors", type=int, default=UMAP_N_NEIGHBORS)
+    emb.add_argument("--umap-min-dist", type=float, default=UMAP_MIN_DIST)
+
+    sp = ap.add_argument_group("split")
+    sp.add_argument("--random-state", type=int, default=42,
+                    help="split seed; use the same value as run.py --random-state")
 
     args = ap.parse_args()
 
@@ -142,6 +154,20 @@ def main() -> None:
     df = pd.read_csv(args.in_csv, low_memory=False)
     log(f"  {df.shape[0]} rows x {df.shape[1]} cols")
     log(f"Requested: {', '.join(n for n, w in (('binary', want_binary), ('score', want_score), ('embed', want_embed)) if w)}")
+
+    # One split for everything below, identical to the one run.py will make.
+    need_split = want_embed or args.vocab_scope == "train"
+    split = None
+    try:
+        split = assign_train_test(df, seed=args.random_state)
+    except (KeyError, ValueError) as exc:
+        if need_split:
+            raise SystemExit(f"cannot make the train/test split: {exc}")
+    if split is not None:
+        c = split.value_counts().to_dict()
+        log(f"Split (seed {args.random_state}): {c.get('train', 0)} train / "
+            f"{c.get('test', 0)} test / {c.get('excluded', 0)} excluded")
+    tmask = None if split is None else (split == TRAIN).to_numpy()
 
     out = df
 
@@ -163,7 +189,7 @@ def main() -> None:
             top_k=args.top_k,
             top_list=top_list,
             vocab_scope=args.vocab_scope,
-            split_col=args.split_col,
+            train_mask=tmask,
             ingredient_cap=cap,
             max_score=args.max_score,
             exact_k=not args.no_exact_k,
@@ -209,8 +235,12 @@ def main() -> None:
                 dims=dims,
                 ingredient_col=args.ingredient_col,
                 model=args.embed_model,
-                api_key=args.api_key,
+                api_key_file=args.api_key_file,
+                cache_dir=args.cache_dir,
                 random_state=args.random_state,
+                train_mask=tmask,
+                n_neighbors=args.umap_neighbors,
+                min_dist=args.umap_min_dist,
             )
         except ValueError as exc:
             if "API key" not in str(exc):
@@ -218,12 +248,17 @@ def main() -> None:
             raise SystemExit(
                 f"{exc}\n"
                 "--embed needs a key only when the embeddings are not already "
-                "cached in data/embedding_cache. Set OPENAI_API_KEY, pass "
-                "--api-key, or drop --embed to build the ingredient blocks alone."
+                "cached in data/embedding_cache. Pass --api-key-file or set "
+                "OPENAI_API_KEY, or drop --embed to build the ingredient blocks alone."
             ) from None
         log(f"  {einfo['n_distinct_texts']} distinct strings -> "
             f"{einfo['embedding_dim']}-d embeddings -> "
-            f"{', '.join('umap_%d' % d for d in einfo['umap_dims'])}")
+            f"{', '.join('umap_%d' % d for d in einfo['umap_dims'])} "
+            f"(UMAP fit on {einfo['n_fit_rows']} train rows, "
+            f"{einfo['n_transformed_rows']} rows transformed)")
+
+    if split is not None:
+        out[SPLIT_COL] = split.to_numpy()
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.out_csv, index=False)

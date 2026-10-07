@@ -12,9 +12,11 @@ import numpy as np
 import argparse
 from pathlib import Path
 import warnings
-from sklearn.model_selection import train_test_split
 import yaml
 from datetime import datetime
+
+# The repository root, so default paths work from any working directory.
+REPO_ROOT = Path(__file__).resolve().parent
 
 # Make logs directory
 os.makedirs('logs', exist_ok=True)
@@ -59,6 +61,7 @@ def _resolve_feature_sets(
     cluster_feature_col: str,
     cluster_feature_type: str,
     aux_cols: list = None,
+    include_nut8_baseline: bool = True,
 ):
     tokens = _parse_csv_arg(ing_features_raw)
     if not tokens:
@@ -113,7 +116,7 @@ def _resolve_feature_sets(
             logger.warning("--aux-feature columns not found, skipping: %s", missing_aux)
         extra_cols.extend(found_aux)
 
-    feature_sets = {"nut8": list(nut8_cols)}
+    feature_sets = {"nut8": list(nut8_cols)} if include_nut8_baseline else {}
     for token in tokens:
         parts = [p.strip().lower() for p in str(token).split("+") if p.strip()]
         if not parts:
@@ -163,28 +166,7 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
         mode_str = "TEST" if is_test_mode else "COMPLETE"
         
         logger.info(f"Starting nutpred {mode_str.lower()} pipeline")
-        
-        # Force reload all modules to ensure latest versions
-        logger.info("Forcing module reload to ensure latest versions...")
-        import importlib
-        
-        # List of modules to reload
-        modules_to_reload = [
-            'nutpred.preprocess',
-            'nutpred.metrics',
-            'nutpred.viz',
-            'nutpred.constants',
-            'nutpred.predict',
-        ]
-        
-        for module_name in modules_to_reload:
-            if module_name in sys.modules:
-                logger.info(f"Reloading module: {module_name}")
-                importlib.reload(sys.modules[module_name])
-            else:
-                logger.info(f"Loading module: {module_name}")
-        
-        # Import all modules after reload
+
         from nutpred.preprocess import (
             load_inputs,
             make_id_col,
@@ -202,9 +184,9 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
             ensure_targets,
         )
         from nutpred.viz import compare_feature_sets, create_scatterplots, create_shap_plots
+        from nutpred.metrics import w20_mask
+        from nutpred.split import SPLIT_COL, assign_train_test
         import nutpred.constants as C
-        
-        logger.info("Module reload complete - using latest versions")
 
         # Step 1: Load and preprocess data
         logger.info("Step 1: Loading and preprocessing data")
@@ -290,6 +272,9 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
         "cv": args.cv,
         "model_type": args.model_type,
         "n_trials": args.n_trials,
+        "n_jobs": args.n_jobs,
+        "targets": args.targets,
+        "no_nut8_baseline": args.no_nut8_baseline,
         "config": args.config,
         "hurdle": args.hurdle,
         "ing_feature": args.ing_feature,
@@ -383,27 +368,30 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
             len(umap20_cols),
         )
         
-        # Map nutrient columns between snack and ingnut dataframes
-        ingnut_cols = ['Energy', 'Total lipid (fat)', 'Protein', 'Carbohydrate, by difference', 
-                      'Sugars, total', 'Sodium, Na', 'Cholesterol', 'Fatty acids, total saturated']
-        
-        logger.info(f"   Available nut8 columns: {C.NUT8}")
-        logger.info(f"   Available ingnut columns: {ingnut_cols}")
-        
-        # Create mapping between snack and ingnut column names
-        column_mapping = {}
-        for food_col, ingnut_col in zip(C.NUT8, ingnut_cols):
-            column_mapping[food_col] = ingnut_col
-        
-        logger.info(f"   Column mapping: {column_mapping}")
-        
-        # Create train/test split for evaluation (not for optimization training)
+        # Train/test split. run.py always makes its own (nutpred.split): 80/20,
+        # seed --random-state, stratified on the targets' zero pattern. The
+        # feature builders call the same function, so a vocabulary or UMAP
+        # reducer fit "on train rows" was fit on these train rows -- provided
+        # both saw the same table. A SampleType column written by the builders
+        # is only checked against the new split, never used as the split.
         filtered_df.reset_index(drop=True, inplace=True)
-        train_idx, test_idx = train_test_split(filtered_df.index, test_size=0.2, random_state=random_state)
-        logger.info(f"   Created train/test split: {len(train_idx)} train samples, {len(test_idx)} test samples")
-        
-        filtered_df["SampleType"] = "train"
-        filtered_df.loc[test_idx, "SampleType"] = "test"
+        split = assign_train_test(filtered_df, seed=random_state)
+        if SPLIT_COL in filtered_df.columns:
+            prior = filtered_df[SPLIT_COL].astype(str)
+            n_diff = int((prior != split.astype(str)).sum())
+            if n_diff:
+                logger.warning(
+                    "   %d row(s) are assigned to a different split than the one the "
+                    "ingredient features were built with (SampleType column in --food-df). "
+                    "This happens when rows are excluded or subsampled here (e.g. "
+                    "--exclude-values, --smoke-test-rows); the vocabulary/UMAP were then "
+                    "fit on a slightly different train set.", n_diff)
+        filtered_df[SPLIT_COL] = split.values
+        counts = split.value_counts().to_dict()
+        logger.info(
+            "   Created train/test split: %d train, %d test, %d excluded (missing a target)",
+            counts.get("train", 0), counts.get("test", 0), counts.get("excluded", 0),
+        )
         
         # Make df for each filter group
         group_cols = ["first_mapped", "mapped_ratio_high", "mapped_ratio_top20_high", "strict"]
@@ -422,6 +410,10 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
             group_cols.append("full")
             logger.info(f"   Full dataframe size is: {group_dfs['full'].shape}")
 
+
+        # Targets to model this run (all three by default). The split always
+        # uses all three, so a per-target run shares the same rows.
+        targets = [t for t in C.TARGET_NUT3 if not args.targets or t in args.targets]
 
         # Step 2: Train and evaluate FullNut models
         ml_metrics = {}
@@ -452,10 +444,11 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
             for group_name, group_df in group_dfs.items():
                 n_missing = int(group_df[present].isna().any(axis=1).sum())
                 if n_missing:
-                    med = group_df[present].median()
+                    # Train-row median only, so test rows do not shape the fill.
+                    med = group_df.loc[group_df[SPLIT_COL] == "train", present].median()
                     group_df[present] = group_df[present].fillna(med)
                     logger.info("   [%s] %d row(s) without ingredient-reference "
-                                "coverage; median-imputed", group_name, n_missing)
+                                "coverage; filled with the train median", group_name, n_missing)
                 group_dfs[group_name] = group_df
                 aux_cols_by_group[group_name] = present
         elif args.aux_cols:
@@ -477,13 +470,14 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
                 cluster_feature_col=args.cluster_feature_col,
                 cluster_feature_type=args.cluster_feature_type,
                 aux_cols=aux_cols_by_group.get(group_name),
+                include_nut8_baseline=not args.no_nut8_baseline,
             )
             group_dfs[group_name] = group_df
             feature_sets_by_group[group_name] = feature_sets
             ml_metrics[group_name], models_dicts[group_name], ml_output_dfs[group_name] = train_tree_models(
                 group_df,
                 feature_sets,
-                C.TARGET_NUT3,
+                targets,
                 cv=args.cv,
                 group_name=group_name,
                 outdir=outdir,
@@ -496,6 +490,7 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
                 random_state=args.random_state,
                 n_trials=args.n_trials,
                 search_space=search_space,
+                n_jobs=args.n_jobs,
             )
 
         # Step 4: Save outputs
@@ -531,11 +526,6 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
         ingredient_summary.to_csv(os.path.join(outdir, summary_filename), index=False)
         logger.info(f"   Saved {summary_filename}")
         
-        # (2) Ingredient weights (only produced when the ingnut optimizer runs as
-        # an --aux-feature; not applicable to the base FullNut pipeline)
-        weights_filename = "N/A"
-        logger.info("   (2) Skipping ingredient weights (no --aux-feature requested)")
-
         # (3) Saving ML predictions
         logger.info("   (3) Saving ML predictions...")
 
@@ -567,7 +557,7 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
             df_with_preds[nutrient] = filtered_df[nutrient].copy()
 
         # Add target nutrients
-        for nutrient in C.TARGET_NUT3:
+        for nutrient in targets:
             df_with_preds[nutrient] = filtered_df[nutrient].copy()
         
         # Add ML predictions
@@ -585,50 +575,37 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
                 continue
             df_with_preds = df_with_preds.merge(_df[id_cols + ml_pred_cols], on=id_cols, how='left')
 
-        # NEW: compute within-20% flags for each prediction column (with small-value handling)
-        def _within_fn(true_val, pred_val, nutrient_name, pct=0.2):
-            try:
-                if pd.isna(true_val) or pd.isna(pred_val):
-                    return False
-                t = float(true_val)
-                p = float(pred_val)
-            except Exception:
-                return False
-            # choose small-value baseline by unit in nutrient name
-            if '(mg)' in nutrient_name:
-                min_abs = 5.0
-            elif '(g)' in nutrient_name:
-                min_abs = 0.5
-            else:
-                min_abs = 1.0
-            abs_tol = min_abs * pct
-            return abs(p - t) <= max(pct * abs(t), abs_tol)
-
+        # W20 per prediction column, on TEST rows only, with the paper's
+        # definition (metrics.w20_mask: within 20%; a declared 0 needs a 0
+        # prediction). Train rows carry in-sample predictions and are left out.
+        model_tags = ("_xgboost_", "_random_forest_", "_support_vector_", "_mlp_",
+                      "_hist_gradient_boosting_", "_linear_", "_knn_")
+        is_test = df_with_preds[SPLIT_COL].eq("test")
         within_summary_rows = []
-        # For each target nutrient, find prediction columns that include the nutrient name + 'pred'
-        for nutrient in C.TARGET_NUT3:
-            pred_cols = [col for col in df_with_preds.columns if nutrient in col and 'pred' in col]
+        for nutrient in targets:
+            pred_cols = [
+                col for col in df_with_preds.columns
+                if col.startswith(f"{nutrient}_") and any(tag in col for tag in model_tags)
+                and not col.endswith(("_zero_prob", "_zero_pred"))
+            ]
             for pred_col in pred_cols:
-                flag_col = f"{pred_col}_within20pct"
-                # create boolean column per-row
-                df_with_preds[flag_col] = df_with_preds.apply(lambda r, n=nutrient, pc=pred_col: _within_fn(r.get(n), r.get(pc), n), axis=1)
-                # compute per-group fractions and store summary
+                y = pd.to_numeric(df_with_preds[nutrient], errors="coerce").to_numpy(float)
+                p = pd.to_numeric(df_with_preds[pred_col], errors="coerce").to_numpy(float)
+                hit = w20_mask(y, p) & np.isfinite(y) & np.isfinite(p)
                 for group_name in group_dfs.keys():
                     if group_name == 'full':
-                        mask = pd.Series(True, index=df_with_preds.index)
+                        mask = is_test
                     elif group_name in df_with_preds.columns:
-                        mask = df_with_preds[group_name].astype(bool)
+                        mask = is_test & df_with_preds[group_name].astype(bool)
                     else:
-                        mask = pd.Series(False, index=df_with_preds.index)
-                    if mask.sum() == 0:
-                        frac = float('nan')
-                    else:
-                        frac = df_with_preds.loc[mask, flag_col].mean()
+                        continue
+                    m = mask.to_numpy()
                     within_summary_rows.append({
                         'Group': group_name,
                         'Target': nutrient,
                         'PredictionColumn': pred_col,
-                        'Within20_frac': frac,
+                        'TestN': int(m.sum()),
+                        'W20_test': float(hit[m].mean()) if m.any() else float('nan'),
                     })
         within20_df = pd.DataFrame(within_summary_rows)
         within20_filename = f"within20_metrics_{'test' if is_test_mode else 'complete'}.csv"
@@ -637,9 +614,7 @@ def run_pipeline(test_size=None, random_state=42, exclude_type="ingredients", ex
 
         # Reorder columns for easy comparison
         ordered_cols = id_cols + rest_group_cols
-        logger.info(f"DEBUGGING - CHECK nut8 columns: {C.NUT8}")
-        logger.info(f"DEBUGGING - CHECK target nutrient columns: {C.TARGET_NUT3}")
-        for nutrient in C.TARGET_NUT3:
+        for nutrient in targets:
             ordered_cols += [col for col in df_with_preds.columns if nutrient in col] 
         for nutrient in C.NUT8:
             ordered_cols += [col for col in df_with_preds.columns if nutrient in col] 
@@ -693,41 +668,44 @@ NUTPRED {mode_str} PIPELINE EXECUTION SUMMARY
 {'=' * (len(mode_str) + 40)}
 
 EXECUTION DETAILS:
-- Start time: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
+- Finished: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
 - Output directory: {outdir}
-{test_size}- Exclude type: {filter_type_str}
+- Smoke-test rows: {test_size if is_test_mode else 'none (full data)'}
+- Exclude type: {filter_type_str}
 - Exclude terms: {exclude_terms}
 
 INPUT DATA:
 - Food data: {food_df.shape[0]} samples, {food_df.shape[1]} total features
 - Filtered data: {filtered_df.shape[0]} samples, {filtered_df.shape[1]} total features
 - Thesaurus: {thesaurus_df.shape[0]} ingredient mappings
-- Ingredient-nutrient data: {ingnut_df.shape[0]} ingredients, {len(ingnut_cols)} nutrients
+- Ingredient-nutrient data: {ingnut_df.shape[0]} ingredients (vocabulary for binary/score)
+- Split: {counts.get('train', 0)} train / {counts.get('test', 0)} test / {counts.get('excluded', 0)} excluded
 
 PROCESSING RESULTS:
 - Top k ingredients selected for feature engineering
 - {len(binary_cols)} binary features created
 - {len(score_cols)} score features created  
 - {len(umap2_cols) + len(umap10_cols) + len(umap20_cols)} UMAP features used (umap_2={len(umap2_cols)}, umap_10={len(umap10_cols)}, umap_20={len(umap20_cols)})
-- {len(C.NUT8)} base nutrients predicted
-- {len(C.TARGET_NUT3)} target nutrients predicted
+- {len(C.NUT8)} base nutrients used as inputs (nut8)
+- {len(targets)} target nutrient(s) predicted: {', '.join(targets)}
 
-MODEL PERFORMANCE:
-- Optimization solver: OSQP with nnls_mono constraint
-- ML models trained: {len(all_metrics) // (len(C.TARGET_NUT3) * 2) if len(all_metrics) > 0 else 0} different feature combinations (evaluated on strict and all samples)
-- Total model evaluations: {len(all_metrics)} (including cross-validation and filter breakdowns)
+MODELS:
+- Model family: {args.model_type}{' (hurdle)' if args.hurdle else ''}, {args.n_trials} Optuna trials, {args.cv}-fold CV
+- Zero threshold: {args.zero_threshold_method if args.hurdle else 'n/a'}
+- Feature sets: {', '.join(feature_sets_by_group.get('full', {}).keys())}
+- Metric rows (test set): {len(all_metrics)}
 
 OUTPUT FILES GENERATED:
 1. {df_with_preds_filename} - Complete dataset with all predictions
 2. {summary_filename} - Ingredient parsing and mapping results
 3. {metrics_filename if len(all_metrics) > 0 else 'N/A'} - Performance metrics for all models
-4. {weights_filename} - Optimization weights for each sample
+4. {within20_filename} - W20 per prediction column, test rows only
 
 5. plots/ - Directory containing comprehensive visualizations:
-   - metrics_comparison_[nutrient].png - Model performance comparison heatmap for each nutrient
-   - scatterplots/ - True vs predicted scatterplots for all feature sets and groups
-   - shap/ - SHAP analysis plots for XGBoost models (if available)
-6. nutpred.log - Detailed execution log
+   - model_comparison_[nutrient].png - Model performance comparison heatmap for each nutrient
+   - scatterplots/ - True vs predicted scatterplots, test rows only
+   - shap/ - SHAP analysis plots (with --shap)
+6. logs/nutpred_[timestamp].log - Detailed execution log
 
 EXECUTION STATUS: COMPLETED SUCCESSFULLY
         """
@@ -751,7 +729,7 @@ EXECUTION STATUS: COMPLETED SUCCESSFULLY
         logger.error(f"Pipeline failed: {e}")
         logger.error(traceback.format_exc())
         print(f"\nERROR: {e}")
-        print("Check nutpred.log for detailed error information.")
+        print("Check logs/ for the detailed error log.")
         return False
 
 
@@ -761,11 +739,10 @@ if __name__ == "__main__":
     # Test/complete mode
     ap.add_argument("--smoke-test-rows", type=int, default=None,
                        help="Debug/smoke-test row count: subsample the loaded data to this many rows "
-                            "for a quick run (if not specified, runs the complete pipeline). This is a "
-                            "debug convenience only, not the ML train/test split ratio (that's driven by "
-                            "the SampleType/data_type column already present in the input CSV).")
-    ap.add_argument("--random-state", type=int, default=42, 
-                       help="Random state for reproducibility")
+                            "for a quick run (if not specified, runs the complete pipeline). Not the "
+                            "train/test ratio: run.py always makes its own 80/20 split (nutpred.split).")
+    ap.add_argument("--random-state", type=int, default=42,
+                       help="Seed for the train/test split, Optuna and the models")
 
     # Filtering options
     ap.add_argument("--exclude-type", choices=["ingredients", "category"], default="ingredients",
@@ -776,22 +753,20 @@ if __name__ == "__main__":
     # synthetic examples written by `python data/make_example_data.py`, so a
     # fresh clone runs end to end; pass your own paths to do anything real.
     # See data/README.md for the column contract each input must satisfy.
-    ap.add_argument("--food-df", type=str, default="data/example/food_df.example.csv",
+    ap.add_argument("--food-df", type=str, default=str(REPO_ROOT / "data/example/food_df.example.csv"),
                     help="per-food panel + ingredient string + umap_* columns "
                          "(default: the synthetic example)")
-    ap.add_argument("--thesaurus-df", type=str, default="data/example/thesaurus.example.xlsx",
+    ap.add_argument("--thesaurus-df", type=str, default=str(REPO_ROOT / "data/example/thesaurus.example.xlsx"),
                     help="surface ingredient term -> preferred descriptor "
                          "(default: the synthetic example)")
-    ap.add_argument("--ingnut-df", type=str, default="data/example/ingnut_df.example.csv",
+    ap.add_argument("--ingnut-df", type=str, default=str(REPO_ROOT / "data/example/ingnut_df.example.csv"),
                     help="per-ingredient reference nutrient profile "
                          "(default: the synthetic example)")
     ap.add_argument(
         "--no-ingredient-cap",
         action="store_true",
-        help="Map every ingredient on the label instead of only the first 20. The 20-item "
-             "cap is the historical default and matches replication.constants.MAX_INGREDIENTS; "
-             "lifting it recovers 5.7%% of ingredient mentions and changes 10.1%% of snack "
-             "foods. The coverage filters (first_mapped, mapped_ratio_top20, strict) are "
+        help="Map every ingredient on the label instead of only the first 20 (the reported "
+             "setting). The coverage filters (first_mapped, mapped_ratio_top20, strict) are "
              "recomputed on the full list, so group membership and N shift.",
     )
     ap.add_argument("--outdir", type=str, default="./nutpred_outputs")
@@ -812,6 +787,13 @@ if __name__ == "__main__":
         type=int,
         default=100,
         help="Optuna trial budget per classifier/regressor tuning run.",
+    )
+    ap.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        help="Threads per model fit (XGBoost/random forest/kNN). 1 suits small inputs; "
+             "the reported full-cohort runs used 16.",
     )
     ap.add_argument(
         "--config",
@@ -857,6 +839,13 @@ if __name__ == "__main__":
              "ingredient-reference coverage are median-imputed.",
     )
 
+    ap.add_argument("--targets", nargs="+", choices=["Calcium(mg)", "Fiber(g)", "Iron(mg)"],
+                    default=None,
+                    help="Model only these targets (default: all three). The train/test split "
+                         "is the same either way, so targets can be run as separate jobs.")
+    ap.add_argument("--no-nut8-baseline", action="store_true",
+                    help="Do not also fit the bare nut8 comparison model; fit only the "
+                         "--ing-feature sets.")
     ap.add_argument("--groups", choices=["all", "full"], default="full",
                     help="Run metrics/predictions for all groups (first_mapped, mapped_ratio_high, strict, full) or only the 'full' group")
     ap.add_argument("--hurdle", action="store_true",
@@ -864,8 +853,10 @@ if __name__ == "__main__":
     ap.add_argument("--two-stage", dest="hurdle", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--zero-threshold", type=float, default=0.5,
                     help="Classifier probability threshold (used with --zero-threshold-method fixed).")
-    ap.add_argument("--zero-threshold-method", choices=["fixed", "youden", "f1"], default="fixed",
-                    help="How to choose the zero-classification threshold.")
+    ap.add_argument("--zero-threshold-method", choices=["fixed", "youden", "f1"], default="f1",
+                    help="How to choose the zero-classification threshold, always on TRAINING rows: "
+                         "f1 (default, the reported setting) maximises F1 over 0.01..0.99; youden "
+                         "maximises TPR-FPR; fixed uses --zero-threshold.")
     ap.add_argument("--zero-eps", type=float, default=0.0,
                     help="Treat values <= this as zero in classifier training.")
     ap.add_argument("--pos-log1p", action="store_true",
@@ -876,10 +867,10 @@ if __name__ == "__main__":
                     help="Compute and save SHAP summary/bar/feature-group plots for every "
                          "trained FullNut model (regressor, and classifier when --hurdle).")
 
-    # Default to IQR-based outlier removal (Tukey rule with multiplier 1.5 is more typical);
-    # users can override with --outlier-method and adjust multiplier with --outlier-iqr-multiplier.
-    ap.add_argument("--outlier-method", choices=["none", "iqr", "zscore"], default="iqr",
-                    help="Outlier removal method for nutrient columns. Default changed to 'iqr'.")
+    # Off by default, as in the reported runs. When on, rows are dropped using
+    # statistics of the whole table, before the split.
+    ap.add_argument("--outlier-method", choices=["none", "iqr", "zscore"], default="none",
+                    help="Optional outlier row removal on nutrient columns (default: none).")
     ap.add_argument("--outlier-iqr-multiplier", type=float, default=1.5,
                     help="IQR multiplier for outlier removal when --outlier-method=iqr. Default 1.5 (Tukey).")
     ap.add_argument("--outlier-zscore", type=float, default=4.0,

@@ -12,8 +12,14 @@ import nutpred.constants as C
 logger = logging.getLogger(__name__)
 
 
+MODEL_TAGS = ("xgboost", "random_forest", "hist_gradient_boosting", "support_vector",
+              "linear", "knn", "mlp")
+
+
 def _parse_fullnut_pred_col(pred_col: str):
-    for tag in ("xgboost", "random_forest", "support_vector", "mlp"):
+    if pred_col.endswith(("_zero_prob", "_zero_pred")):
+        return None, None, None
+    for tag in MODEL_TAGS:
         needle = f"_{tag}_full_"
         if needle in pred_col:
             nutrient, feature_set = pred_col.split(needle, 1)
@@ -48,6 +54,8 @@ def compare_feature_sets(metrics_df: pd.DataFrame = None, metrics_file_path: str
 
     # Create separate heatmaps for each nutrient: ModelType (rows) × Group (columns)
     for nutrient in C.TARGET_NUT3:
+        if not (df['Nutrient'] == nutrient).any():
+            continue
         n_metrics = len(metrics_to_plot)
         fig, axes = plt.subplots(1, n_metrics, figsize=(6*n_metrics, 6))
         if n_metrics == 1:
@@ -92,57 +100,42 @@ def compare_feature_sets(metrics_df: pd.DataFrame = None, metrics_file_path: str
         logger.info(f"Model comparison heatmap saved to {output_path}")
 
 def create_scatterplots(pred_file_path: str = None, outdir: str = None):
-    """Create scatterplots comparing predicted vs actual values for all models."""
-    logger.info("Creating scatterplots for all models....")
+    """True vs predicted scatterplots for every model prediction column.
+
+    Only TEST rows are plotted: train rows carry in-sample predictions, which
+    would make the fit look better than it is.
+    """
+    logger.info("Creating scatterplots (test rows only)....")
 
     plots_dir = os.path.join(outdir, "scatterplots")
     os.makedirs(plots_dir, exist_ok=True)
 
-    # Get all prediction columns
     food_df = pd.read_csv(pred_file_path)
-    pred_cols =  []
-    for nutrient in C.NUT11:
-        pred_cols.extend([col for col in food_df.columns if f'{nutrient}_' in col])
-    pred_cols = [x for x in pred_cols if 'full' in x and x[-2] != "."]
+    if "SampleType" in food_df.columns:
+        food_df = food_df[food_df["SampleType"] == "test"]
+    else:
+        logger.warning("No SampleType column; scatterplots include every row.")
 
     hue_col = "ingnut_top3_mapped"
     if hue_col not in food_df.columns:
         logger.warning("Column '%s' not found; scatterplots will be uncolored.", hue_col)
         hue_col = None
 
-    # Create scatterplots for each nutrient, model type, and group
-    for pred_col in pred_cols:
+    for pred_col in food_df.columns:
         nutrient, model_tag, feature_set = _parse_fullnut_pred_col(pred_col)
-        if nutrient is not None:
-            logger.info("Creating scatterplot for %s - %s", nutrient, pred_col)
-            columns = [nutrient, pred_col]
-            if hue_col:
-                columns.append(hue_col)
-            data = food_df[columns].copy()
-            plt.figure(figsize=(10, 8))
-            sns.scatterplot(x=data[nutrient], y=data[pred_col], alpha=0.5, hue=data[hue_col] if hue_col else None)
-            plt.title(f'Scatterplot: {nutrient} - {model_tag} - full - {feature_set} - {hue_col or "all"}')
-            plt.xlabel('True')
-            plt.ylabel('Predicted')
-            plt.axline((0, 0), (1, 1), color='black', linestyle='--')
-            filename = f'scatterplot_{nutrient}_{model_tag}_full_{feature_set}_{hue_col or "all"}.png'
-            plt.savefig(os.path.join(plots_dir, filename))
-        elif "opt" in pred_col:
-            nutrient = pred_col.split('_')[0]
-            columns = [nutrient, pred_col]
-            if hue_col:
-                columns.append(hue_col)
-            data = food_df[columns].copy()
-            plt.figure(figsize=(10, 8))
-            sns.scatterplot(x=data[nutrient], y=data[pred_col], alpha=0.5, hue=data[hue_col] if hue_col else None)
-            plt.title(f'Scatterplot: {nutrient} - opt - full - {hue_col or "all"}')
-            plt.xlabel('True')
-            plt.ylabel('Predicted')
-            plt.axline((0, 0), (1, 1), color='black', linestyle='--')
-            filename = f'scatterplot_{nutrient}_opt_full_{hue_col or "all"}.png'
-            plt.savefig(os.path.join(plots_dir, filename))
-        else:
-            logger.warning(f"Scatterplot not found for {pred_col}")
+        if nutrient is None or nutrient not in food_df.columns:
+            continue
+        fig = plt.figure(figsize=(10, 8))
+        sns.scatterplot(x=food_df[nutrient], y=food_df[pred_col], alpha=0.5,
+                        hue=food_df[hue_col] if hue_col else None)
+        plt.title(f'Test set: {nutrient} - {model_tag} - {feature_set} (n={len(food_df)})')
+        plt.xlabel('True')
+        plt.ylabel('Predicted')
+        plt.axline((0, 0), (1, 1), color='black', linestyle='--')
+        filename = f'scatterplot_{nutrient}_{model_tag}_full_{feature_set}_{hue_col or "all"}.png'
+        fig.savefig(os.path.join(plots_dir, filename))
+        plt.close(fig)
+
 
 def _feature_group(col: str) -> str:
     """Coarse feature-group label used for the SHAP group-importance bar chart."""
@@ -154,8 +147,8 @@ def _feature_group(col: str) -> str:
         return "ingredient_score"
     if col.startswith("umap_"):
         return "umap"
-    if col.endswith("_pred_ingnut_aux"):
-        return "ingnut_aux"
+    if col.endswith(("_ing_pred", "_pred_ingnut_aux")):
+        return "knowledge_guided"
     if "fortifier" in col.lower():
         return "fortifier"
     if "cluster" in col.lower():
@@ -270,13 +263,13 @@ def create_shap_plots(
                 logger.warning("No feature columns found for %s/%s, skipping SHAP", group_name, feature_set_name)
                 continue
 
-            X_test_full = test_data[feature_cols].to_numpy(float)
-            X_train_full = train_data[feature_cols].to_numpy(float) if len(train_data) else X_test_full
-            mask = ~np.isnan(X_test_full).any(axis=1)
-            X_test_clean = X_test_full[mask]
-            if len(X_test_clean) == 0:
-                logger.warning("No valid (non-NaN) test rows for SHAP: %s/%s", group_name, feature_set_name)
-                continue
+            # Explain every test row, with missing values filled by the TRAIN
+            # median exactly as the models saw them in training.
+            from sklearn.impute import SimpleImputer
+            X_train_raw = train_data[feature_cols].to_numpy(float)
+            imputer = SimpleImputer(strategy="median", keep_empty_features=True).fit(X_train_raw)
+            X_train_full = imputer.transform(X_train_raw)
+            X_test_clean = imputer.transform(test_data[feature_cols].to_numpy(float))
 
             for nutrient, stage_models in per_nutrient.items():
                 for stage, model in (("regressor", stage_models.get("regressor")), ("classifier", stage_models.get("classifier"))):
@@ -295,4 +288,4 @@ def create_shap_plots(
 
     logger.info("All SHAP plots saved to %s", shap_dir)
 
-__all__=[compare_feature_sets, create_scatterplots, create_shap_plots]
+__all__ = ["compare_feature_sets", "create_scatterplots", "create_shap_plots"]

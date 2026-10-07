@@ -80,11 +80,6 @@ def within_20pct_including_zero(y_true: np.ndarray, y_pred: np.ndarray) -> float
     return float(np.mean(hit[valid]))
 
 
-# Band for CV3 dashboards / heatmaps: same units as ``y_true`` (e.g. mg or g per 100 g).
-
-
-
-
 def _safe_roc(y_true: np.ndarray, y_prob: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     y_true = np.asarray(y_true, dtype=int).ravel()
     y_prob = np.asarray(y_prob, dtype=float).ravel()
@@ -94,27 +89,42 @@ def _safe_roc(y_true: np.ndarray, y_prob: np.ndarray) -> Tuple[np.ndarray, np.nd
     return fpr, tpr, thr
 
 
+# Candidate cut-offs for the F1 search: 0.01, 0.02, ..., 0.99.
+F1_THRESHOLD_GRID = np.linspace(0.01, 0.99, 99)
+
+
 def select_threshold(
     y_true: np.ndarray,
     y_prob: np.ndarray,
-    method: str = "youden",
+    method: str = "f1",
     fixed_threshold: float = 0.5,
 ) -> float:
+    """Probability cut-off for the hurdle model's zero classifier.
+
+    Call this with TRAINING labels and the classifier's probabilities on the
+    training rows -- never with test data, or the threshold is tuned on the
+    rows it is then scored on.
+
+    ``"f1"`` scans F1_THRESHOLD_GRID and keeps the first cut-off with the
+    highest F1 of the zero class (label 1); this is the reported setting.
+    ``"youden"`` maximises TPR - FPR on the ROC curve. ``"fixed"`` returns
+    ``fixed_threshold``.
+    """
     if method == "fixed":
         return float(fixed_threshold)
-    fpr, tpr, thr = _safe_roc(y_true, y_prob)
+    y_true = np.asarray(y_true, dtype=int).ravel()
+    y_prob = np.asarray(y_prob, dtype=float).ravel()
     if method == "youden":
-        j = tpr - fpr
-        return float(thr[int(np.argmax(j))])
+        fpr, tpr, thr = _safe_roc(y_true, y_prob)
+        return float(thr[int(np.argmax(tpr - fpr))])
     if method == "f1":
-        # For binary zero-gate, treat positive class as zero-label=1
-        eps = 1e-12
-        precision = tpr / np.maximum(tpr + fpr, eps)
-        recall = tpr
-        f1 = 2 * precision * recall / np.maximum(precision + recall, eps)
-        return float(thr[int(np.argmax(f1))])
-    logger.warning("Unknown threshold method '%s', fallback to fixed=%.3f", method, fixed_threshold)
-    return float(fixed_threshold)
+        best_thr, best = float(fixed_threshold), -np.inf
+        for thr in F1_THRESHOLD_GRID:
+            score = f1_score(y_true, (y_prob >= thr).astype(int), zero_division=0)
+            if score > best:
+                best, best_thr = float(score), float(thr)
+        return best_thr
+    raise ValueError(f"Unknown threshold method {method!r}; use fixed, youden or f1")
 
 
 def roc_auc(y_true: np.ndarray, y_prob: np.ndarray) -> float:
@@ -122,11 +132,16 @@ def roc_auc(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     return float(auc(fpr, tpr))
 
 
-def zero_upper_bound_per100g(serving_g: np.ndarray, threshold_per100g: float) -> np.ndarray:
-    """Per-serving upper bound for interval-compatible 'zero' labels (threshold is per 100 g)."""
+def zero_upper_bound_per100g(serving_g: np.ndarray, threshold_per_serving: float) -> np.ndarray:
+    """Per-100 g amount below which a declared 0 is interval-compatible.
+
+    The label rule is per serving and predictions are per 100 g, so the
+    per-serving threshold is scaled by 100 / serving size. A serving size that
+    is missing or not positive gives NaN, which no prediction can fall under.
+    """
     s = np.asarray(serving_g, dtype=float).ravel()
-    thr = float(threshold_per100g)
-    return thr * np.clip(s, 0.0, np.inf) / 100.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(s > 0, float(threshold_per_serving) * 100.0 / s, np.nan)
 
 
 @dataclass
@@ -236,7 +251,10 @@ def evaluate_predictions(
     sq[nz_mask] = (yt_f[nz_mask] - yp_f[nz_mask]) ** 2
     neg = zero_mask & (yp_f < 0)
     compat = zero_mask & (yp_f >= 0) & (yp_f < upper)
-    above = zero_mask & (yp_f >= upper)
+    # Everything else declared 0 is above the bound; a row with no usable
+    # serving size (NaN bound) is scored against 0, i.e. exact-zero.
+    above = zero_mask & ~neg & ~compat
+    upper = np.where(np.isfinite(upper), upper, 0.0)
     sq[neg] = yp_f[neg] ** 2
     sq[compat] = 0.0
     sq[above] = (yp_f[above] - upper[above]) ** 2
@@ -361,11 +379,12 @@ def evaluate_classifier(
 #             when the prediction is exactly 0 -- relative error is undefined at
 #             zero, so nothing weaker is defensible without a tolerance.
 #
-#   W20_v2    Same as W20 on non-zero rows. A row declaring 0 counts as a hit
-#             when the prediction is small enough that a real label could
-#             legitimately have printed "0": per-serving amount at or under the
-#             KFDA rounding threshold. Rows whose serving-size unit cannot be
-#             resolved to a mass fall back to the exact-0 rule.
+#   W20_v2    "W20-Z" in the manuscript: label-zero-adjusted accuracy. Same as
+#             W20 on non-zero rows; a row declaring 0 counts as a hit when the
+#             prediction is small enough that a real label could legitimately
+#             have printed "0" -- per-serving amount strictly below the
+#             21 CFR 101.9(c) zero-declaration threshold. Rows whose serving
+#             unit cannot be resolved to a mass fall back to the exact-0 rule.
 #
 #   EU        EU Regulation tolerance bands (Guidance Document Table 1) on a
 #             DECLARED-VALUE basis: the prediction is rounded to label precision
@@ -381,10 +400,6 @@ def evaluate_classifier(
 #             is scored on the (c) rounding rule instead.
 #
 # R2 for reported numbers is r2_manual() above.
-#
-# These consolidate four implementations that previously disagreed with one
-# another (three under scripts/ and one under replication/), with the tables
-# and the interval tests reading different ones.
 # ---------------------------------------------------------------------------
 # EU Guidance Table 4 -- rounding guidelines for the nutrition declaration.
 # European Commission (December 2012), section 6 and Table 4.
@@ -415,7 +430,7 @@ ROUND_TIERS: dict[str, Tuple[Tuple[float, float, bool], ...]] = {
 # mineral takes 2.
 SIGFIG_ROW: dict[str, int] = {"vitamin_mineral_3sf": 3, "vitamin_mineral_2sf": 2}
 
-# Which Table 4 row each of the replication's nutrients falls in. A target
+# Which Table 4 row each modelled nutrient falls in. A target
 # absent from this map has no row -- see has_rounding_row().
 ROUNDING_ROW: dict[str, str] = {
     "Energy(kcal)": "energy",
@@ -465,8 +480,6 @@ def rounding_row(target: Optional[str]) -> Optional[str]:
 def has_rounding_row(target: Optional[str]) -> bool:
     """False for anything Table 4 does not cover (e.g. cholesterol)."""
     return rounding_row(target) is not None
-
-
 
 
 def _decimal_scale_back(counts: np.ndarray, decimals: np.ndarray | int) -> np.ndarray:
@@ -556,15 +569,11 @@ def round_declared(values: np.ndarray, target: Optional[str]) -> np.ndarray:
     return out
 
 
-# KFDA (Korean MFDS) label-rounding thresholds, per serving. Same constants as
-# scripts/run_model_family_optuna_nut8_umap20.py -- kept in sync deliberately.
-KFDA_ZERO_THRESHOLD_PER_SERVING: dict[str, float] = {
-    "Calcium(mg)": 26.0,
-    "Iron(mg)": 0.36,
-    "Fiber(g)": 0.5,
-}
+# Serving-size units that can be read as a mass (ml taken as g). Rows with any
+# other unit cannot be converted to a per-serving amount, so the per-serving
+# zero rules in w20_v2_mask() and fda_mask() fall back to an exact-zero test.
+# The thresholds themselves are FDA_ZERO_PER_SERVING, further down.
 RESOLVABLE_SERVING_UNITS = {"g", "grm", "gm", "ml", "mlt"}
-
 
 
 def r2(y: np.ndarray, p: np.ndarray) -> float:
@@ -594,11 +603,18 @@ def w20_v2_mask(
     serving_size: np.ndarray | None = None,
     serving_size_unit: np.ndarray | None = None,
 ) -> np.ndarray:
-    """w20, but zero-declared rows are scored against the label-rounding rule."""
+    """W20-Z: w20, but zero-declared rows are scored against the label rule.
+
+    A declared 0 is a hit when the predicted per-serving amount falls strictly
+    below the 21 CFR 101.9(c) zero-declaration threshold for that nutrient --
+    i.e. when the prediction would itself have been printed as "0" on a real
+    label. Needs serving_size and serving_size_unit; rows whose unit is not a
+    resolvable mass fall back to the exact-zero test.
+    """
     y = np.asarray(y, float)
     p = np.asarray(p, float)
     hit = w20_mask(y, p)
-    thr = KFDA_ZERO_THRESHOLD_PER_SERVING.get(target)
+    thr = FDA_ZERO_PER_SERVING.get(target)
     if thr is None or serving_size is None or serving_size_unit is None:
         return hit
     unit = pd.Series(serving_size_unit).astype(str).str.strip().str.lower().to_numpy()
@@ -606,7 +622,10 @@ def w20_v2_mask(
     ss = pd.to_numeric(pd.Series(serving_size), errors="coerce").to_numpy(dtype=float)
     per_serving = np.abs(p) * ss / 100.0
     z = y == 0
-    roundable = z & resolvable & np.isfinite(per_serving) & (per_serving <= thr)
+    # Strict "<": 21 CFR 101.9(c) allows "0" only for amounts LESS THAN the
+    # threshold, so an amount exactly at it is still a declarable non-zero.
+    # Matches fda_mask() and the manuscript.
+    roundable = z & resolvable & np.isfinite(per_serving) & (per_serving < thr)
     return hit | roundable
 
 
@@ -758,9 +777,8 @@ def eu_mask(y: np.ndarray, p: np.ndarray, target: str,
         governs.
 
     basis="reference" (superseded)
-        The band is centred on ``y_true``. This is what every figure and table
-        produced before the consolidation used; it hands the +45% headroom to
-        the wrong side. Kept only for diffing during renumbering.
+        The band is centred on ``y_true``. It hands the +45% headroom to the
+        wrong side and is kept only for comparison; do not report it.
 
     Raises for a target Table 1 does not cover -- call has_eu_row() first.
     """
@@ -821,11 +839,12 @@ FDA_FLOOR = frozenset({
     "Carbohydrate(g)", "Protein(g)", "Fiber(g)", "Calcium(mg)", "Iron(mg)",
 })
 
-# 21 CFR 101.9(c): the amount below which a value is declared as zero on a US
+# 21 CFR 101.9(c): an amount LESS THAN these may be declared as zero on a US
 # label. These are PER SERVING in the nutrient's own units -- the one place the
 # per-serving basis matters, since the 80%/120% criteria are ratios and so are
-# scale-invariant. Calcium and iron come from (c)(8): under 2% of the Daily
-# Value (1300 mg, 18 mg) is declared as zero.
+# scale-invariant. Fibre is (c)(6)(i), 0.5 g. Calcium and iron come from
+# (c)(8)(iii): under 2% of the Daily Value (1300 mg, 18 mg), i.e. 26 mg and
+# 0.36 mg. These are US FDA values; W20-Z (w20_v2_mask) uses the same table.
 FDA_ZERO_PER_SERVING = {
     "Energy(kcal)": 5.0,
     "Total fat(g)": 0.5,

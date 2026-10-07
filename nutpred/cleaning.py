@@ -202,4 +202,4 @@ def clean_ingredient_text(text) -> List[str]:
     return unique
 
 
-__all__ = [clean_ingredient_text]
+__all__ = ["clean_ingredient_text", "split_top_level"]

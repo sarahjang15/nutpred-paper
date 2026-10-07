@@ -66,6 +66,28 @@ def test_w20_v2_forgives_a_zero_that_would_round_to_zero():
     assert fallback.tolist() == [True, True, False, False]
 
 
+def test_w20_v2_threshold_is_a_strict_inequality():
+    """A per-serving amount exactly AT the threshold is not a declarable zero.
+
+    21 CFR 101.9(c) describes amounts at or below the threshold as declarable
+    zero, so the value at the boundary is still a declarable non-zero. The
+    manuscript states this explicitly; fda_mask() uses the same strict test.
+    """
+    y = np.array([0.0, 0.0, 0.0])
+    ss = np.array([100.0, 100.0, 100.0])   # per-100 g == per-serving
+    units = np.array(["g", "g", "g"], dtype=object)
+    p = np.array([25.9, 26.0, 26.1])       # calcium threshold is 26 mg
+    assert w20_v2_mask(y, p, "Calcium(mg)", ss, units).tolist() == [True, False, False]
+
+
+def test_w20_v2_thresholds_are_the_fda_table():
+    """The W20-Z thresholds are 21 CFR 101.9(c) values, not a separate copy."""
+    from nutpred.metrics import FDA_ZERO_PER_SERVING
+    assert FDA_ZERO_PER_SERVING["Calcium(mg)"] == 26.0    # 2% of 1300 mg DV
+    assert FDA_ZERO_PER_SERVING["Iron(mg)"] == 0.36       # 2% of 18 mg DV
+    assert FDA_ZERO_PER_SERVING["Fiber(g)"] == 0.5
+
+
 def test_eu_row_assignment():
     assert eu_row("Calcium(mg)") == "mineral"
     assert eu_row("Fiber(g)") == "carb"

@@ -35,8 +35,9 @@ no optimized weights and no yield-factor correction.
 
 Coverage. An auxiliary prediction can only be computed when at least one
 retained mapped ingredient has a reference profile. Products without coverage
-get NaN, which run.py imputes with the training-set median -- the manuscript's
-covered-only analyses restrict to the products where this is not needed.
+get NaN, which run.py fills with the median of its TRAIN rows -- the
+manuscript's covered-only analyses restrict to the products where this is not
+needed.
 """
 import re
 import numpy as np
@@ -307,13 +308,25 @@ def _run_optimization(mapped_tokens: List[List[int]], X_all: np.ndarray, Y_mat: 
       If > 0, enforce var >= min_weight on each active ingredient weight (strict positivity floor).
     """
     
-    # Choose solver
+    # Choose solver. Tolerance settings are solver-specific; passing OSQP's to
+    # another solver makes every solve raise.
     solver_map = {"osqp": cp.OSQP, "clarabel": cp.CLARABEL, "scs": cp.SCS, "ecos": cp.ECOS, "piqp": cp.PIQP}
     if solver_name not in solver_map:
-        logger.warning(f"Solver {solver_name} not available, falling back to OSQP")
-        solver_name = "osqp"
+        raise ValueError(f"Unknown solver {solver_name!r}; choose from {sorted(solver_map)}")
+    if solver_map[solver_name] not in cp.installed_solvers():
+        raise ValueError(
+            f"Solver {solver_name!r} is not installed. Install it (e.g. "
+            f"pip install \".[{solver_name}]\") or use --opt-solver osqp."
+        )
     solver_enum = solver_map[solver_name]
-    solver_kwargs = dict(eps_abs=1e-9, eps_rel=1e-9, verbose=False, max_iter=100000, polish=True)
+    solver_kwargs = {
+        "osqp": dict(eps_abs=1e-9, eps_rel=1e-9, max_iter=100000, polish=True),
+        "clarabel": dict(tol_gap_abs=1e-9, tol_gap_rel=1e-9, tol_feas=1e-9, max_iter=1000),
+        "scs": dict(eps_abs=1e-9, eps_rel=1e-9, max_iters=100000),
+        "ecos": dict(abstol=1e-9, reltol=1e-9, feastol=1e-9, max_iters=1000),
+        "piqp": dict(eps_abs=1e-9, eps_rel=1e-9, max_iter=1000),
+    }[solver_name]
+    solver_kwargs["verbose"] = False
     logger.info(f"Using solver: {solver_name}")
     
     # Prepare optimization matrices
@@ -630,9 +643,6 @@ def has_ingredient_coverage(
 ) -> pd.Series:
     """True where >= min_n of the row's mapped ingredients are present in top_list.
 
-    Adapted from scripts/yfaux_coverage.py's has_variant_coverage for this
-    pipeline's mapped_list columns (that script's version keys off separate
-    opt_mapped_list_topn/GPT-pipeline columns which don't exist here).
     """
     top_set = set(top_list)
 
@@ -681,13 +691,14 @@ def build_knowledge_guided_features(
     ingnut_cols: List[str],
     method: str = "opt",
     ingredient_col: str = "mapped_list",
-    constraint: str = "nnls_mono",
+    constraint: str = "le1_mono",
     solver_name: str = "osqp",
     scale: str = "std",
     ridge: float = 0.0,
     robust: bool = False,
     yf_col: Optional[str] = None,
     weight_features: bool = False,
+    min_weight: float = 1e-6,
 ) -> Tuple[pd.DataFrame, List[str], Dict]:
     """Add the ``<target>_ing_pred`` auxiliary columns to ``food_df``.
 
@@ -695,6 +706,10 @@ def build_knowledge_guided_features(
         ``"opt"``     constrained ingredient-ratio optimization (the reported feature)
         ``"yf_opt"``  the same, with the predicted yield-factor correction; needs ``yf_col``
         ``"sum"``     the plain reference-nutrient sum baseline, no optimization
+
+    The defaults are the reported settings: ``constraint="le1_mono"``
+    (w_i >= min_weight, w_i >= w_{i+1}, sum(w) <= 1), ``min_weight`` (epsilon)
+    1e-6, ``ridge`` (lambda) 0, per-nutrient 1/SD residual scaling, OSQP.
 
     Returns ``(df, aux_cols, info)``.
     """
@@ -711,7 +726,7 @@ def build_knowledge_guided_features(
             targets=C.TARGET_NUT3, suffix=AUX_SUFFIX,
         )
     else:
-        out, _, _ = predict_ingnut_weights_and_targets(
+        out, _, failed = predict_ingnut_weights_and_targets(
             food_df, ingnut_df, C.NUT8, ingnut_cols,
             ingredient_col=ingredient_col,
             top_list=top_list,
@@ -720,8 +735,10 @@ def build_knowledge_guided_features(
             yf_col=yf_col,
             constraint=constraint,
             scale=scale,
+            ridge=ridge,
             robust=robust,
             solver_name=solver_name,
+            min_weight=min_weight,
             prediction_suffix=AUX_SUFFIX,
         )
 
@@ -744,6 +761,7 @@ def build_knowledge_guided_features(
         "n_covered": covered,
         "coverage_pct": 100.0 * covered / max(len(out), 1),
         "aux_cols": aux_cols,
+        "n_failed": 0 if method == "sum" else len(failed),
     }
     return out, aux_cols, info
 
@@ -775,12 +793,15 @@ def main() -> None:
                     help="opt (reported), yf_opt (with yield factors), "
                          "sum (reference-nutrient sum baseline)")
     ap.add_argument("--ingredient-cap", type=int, default=20)
-    ap.add_argument("--opt-constraint", default="nnls_mono",
+    ap.add_argument("--opt-constraint", default="le1_mono",
                     choices=["nnls_only", "nnls_mono", "eq1", "eq1_mono", "le1", "le1_mono"])
     ap.add_argument("--opt-solver", default="osqp",
                     choices=["osqp", "clarabel", "scs", "ecos", "piqp"])
     ap.add_argument("--opt-scale", default="std", choices=["std", "pminmax", "logiqr"])
-    ap.add_argument("--opt-ridge", type=float, default=0.0)
+    ap.add_argument("--opt-ridge", type=float, default=0.0,
+                    help="lambda, ridge penalty on the weights (reported: 0)")
+    ap.add_argument("--opt-min-weight", type=float, default=1e-6,
+                    help="epsilon, lower bound on each ingredient weight (reported: 1e-6)")
     ap.add_argument("--opt-robust", action="store_true")
     ap.add_argument("--yf-column", default=None,
                     help="column of per-ingredient yield-factor lists; required by --method yf_opt")
@@ -816,6 +837,7 @@ def main() -> None:
         scale=args.opt_scale,
         ridge=args.opt_ridge,
         robust=args.opt_robust,
+        min_weight=args.opt_min_weight,
         yf_col=args.yf_column,
         weight_features=args.weight_features,
     )
@@ -823,8 +845,10 @@ def main() -> None:
     log(f"method={info['method']}  columns: {', '.join(aux_cols[:4])}"
         + (f" (+{len(aux_cols) - 4} more)" if len(aux_cols) > 4 else ""))
     log(f"reference coverage: {info['n_covered']}/{info['n_rows']} "
-        f"({info['coverage_pct']:.1f}%) -- uncovered rows are NaN and get "
-        f"median-imputed by run.py")
+        f"({info['coverage_pct']:.1f}%) -- uncovered rows are NaN and run.py "
+        f"fills them with the train median")
+    if failed := info.get("n_failed"):
+        log(f"WARNING: {failed} product(s) had a failed solve and got uniform weights")
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.out_csv, index=False)

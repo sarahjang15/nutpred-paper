@@ -12,8 +12,7 @@ synthetic cohort with exactly the columns the pipeline reads, so that
 
 The numbers are drawn from arbitrary distributions and carry no nutritional
 meaning whatsoever. Do not use them for anything but exercising the code path.
-To reproduce the paper you must supply the real inputs; see README.md
-("Preparing your own data") and docs/data_provenance_methods.md.
+To reproduce the paper you must supply the real inputs; see data/README.md and docs/data_provenance_methods.md.
 
 Usage:
     python data/make_example_data.py [--rows 240] [--seed 0]
@@ -110,11 +109,6 @@ def make_food_df(rng: np.random.Generator, n: int) -> pd.DataFrame:
             "serving_size_unit": "g",
             "description": f"EXAMPLE SNACK PRODUCT {i}",
             "publication_date": "2024-01-01",
-            # The canonical build carries its own train/test marker, and the
-            # standalone scripts split on it (--split-col). run.py makes its
-            # own SampleType when this is absent, but the example should show
-            # the column the real input has.
-            "data_type": "test" if rng.random() < 0.2 else "train",
         }
         rec["Energy(kcal)"] = float(np.round(rng.uniform(80, 560), 1))
         rec["Carbohydrate(g)"] = float(np.round(rng.uniform(5, 85), 2))
@@ -134,11 +128,13 @@ def make_food_df(rng: np.random.Generator, n: int) -> pd.DataFrame:
                           ("Iron(mg)", 8.0, 0.32)):
             rec[c] = 0.0 if rng.random() < pz else float(np.round(rng.uniform(0.1, hi), 2))
         for d in UMAP_DIMS:
-            rec[f"umap_{d}"] = str(list(np.round(rng.uniform(-8, 12, d), 6)))
+            # .tolist() -> plain floats, "[1.23, ...]", the format the
+            # pipeline writes and reads.
+            rec[f"umap_{d}"] = str(np.round(rng.uniform(-8, 12, d), 6).tolist())
         rows.append(rec)
     cols = (["fdc_id", "brand_owner", "market_country", "branded_food_category",
              "brand_name", "ingredients", "serving_size", "serving_size_unit",
-             "description", "publication_date", "data_type"]
+             "description", "publication_date"]
             + ["Calcium(mg)", "Carbohydrate(g)", "Cholesterol(mg)", "Energy(kcal)",
                "Saturated fatty acids(g)", "Trans fatty acids(g)", "Fiber(g)",
                "Iron(mg)", "Potassium, K", "Protein(g)", "Sodium(mg)",

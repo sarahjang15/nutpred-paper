@@ -1,35 +1,30 @@
-# Core pipeline: everything `python run.py` needs.
+# The computational environment the reported results were produced in
+# (Python 3.11.13). Exact versions, so the analysis can be rerun as reported:
 #   pip install -r nutpred/requirements.txt
 #
-# Upper bounds are deliberate. The pinned majors are the ones the reported
-# results were produced under; NumPy 3 and scikit-learn 2 are not yet released
-# and are excluded rather than assumed compatible.
-numpy>=1.23,<3
-pandas>=2.0,<3
-scikit-learn>=1.3,<2
-xgboost>=1.7,<4
-optuna>=3.6,<5
-cvxpy>=1.4,<2
-osqp>=0.6,<2
-matplotlib>=3.7,<4
-seaborn>=0.12,<1
-pyyaml>=6.0,<7
-openpyxl>=3.1,<4
-scipy>=1.10,<2
+# pyproject.toml declares compatible version RANGES instead, for using
+# nutpred as a library (`pip install .`).
+numpy==2.4.2
+pandas==2.3.3
+scikit-learn==1.8.0
+xgboost==3.0.5
+optuna==4.8.0
+cvxpy==1.7.5
+osqp==1.0.5
+matplotlib==3.10.8
+seaborn==0.13.2
+pyyaml==6.0.3
+openpyxl==3.1.5
+scipy==1.17.0
+
+# SHAP plots (run.py --shap; Figure 5):
+shap==0.49.1
+
+# Ingredient embeddings (python -m nutpred.build_ingredient_features --embed):
+umap-learn==0.5.12
+pynndescent==0.6.0
+openai==2.14.0
 
 # NOTE: `argparse` was listed here in earlier versions. It is part of the
 # standard library, and installing the PyPI package of the same name shadows
 # the stdlib module with a 2012 backport. Do not re-add it.
-
-# --- Optional extras, by task -------------------------------------------
-# SHAP plots (`run.py --shap`, and the SHAP analysis in nutpred/viz.py):
-#   pip install "shap>=0.44"
-#
-# Rebuilding UMAP ingredient embeddings from scratch
-# (nutpred/prepare.py, scripts/build_snack_umap_lists_csv.py,
-#  scripts/build_full_category_input.py):
-#   pip install "umap-learn>=0.5"
-#
-# Generating ingredient-text embeddings (scripts/embed_text_openai.py,
-# scripts/embed_text_foodbert.py, nutpred/prepare.py):
-#   pip install "openai>=1.0" "torch>=2.0" "transformers>=4.30"

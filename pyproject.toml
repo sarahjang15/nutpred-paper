@@ -37,8 +37,8 @@ nutpred-build-features = "nutpred.build_ingredient_features:main"
 # Required for --shap: pip install ".[shap]"
 shap = ["shap>=0.44,<1"]
 
-# Rebuilding UMAP ingredient embeddings: pip install ".[embeddings]"
-embeddings = ["umap-learn>=0.5", "openai>=1.0", "torch>=2.0", "transformers>=4.30"]
+# Building ingredient embeddings (build_ingredient_features --embed): pip install ".[embeddings]"
+embeddings = ["umap-learn>=0.5", "openai>=1.0"]
 
 # Optional alternative convex solvers (choose any you plan to use)
 clarabel = ["clarabel>=0.7"]
@@ -55,8 +55,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sarahjang15/nutpred"
-Repository = "https://github.com/sarahjang15/nutpred"
+Homepage = "https://github.com/sarahjang15/nutpred-paper"
+Repository = "https://github.com/sarahjang15/nutpred-paper"
 
 [tool.setuptools.packages.find]
 where = ["."]

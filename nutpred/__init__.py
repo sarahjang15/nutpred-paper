@@ -1,14 +1,11 @@
+"""nutpred: predicting calcium, fiber and iron of packaged foods from the
+ingredient list and the macronutrient panel."""
 import logging
 
-# Set up logging configuration for the package
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('nutpred.log')
-    ]
-)
+# A library does not configure logging; run.py and the CLIs do.
+logging.getLogger(__name__).addHandler(logging.NullHandler())
+
+__version__ = "0.3.0"
 
 __all__ = [
     "build_ingredient_features",
@@ -19,10 +16,6 @@ __all__ = [
     "predict",
     "prepare",
     "preprocess",
+    "split",
     "viz",
 ]
-__version__ = "0.0.0"
-
-# Create a logger for the package
-logger = logging.getLogger(__name__)
-logger.info(f"nutpred package version {__version__} initialized")

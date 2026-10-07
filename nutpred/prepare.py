@@ -30,12 +30,6 @@ PREPARED_OUTPUT_NUTRIENTS = [
 ]
 
 
-
-
-
-
-
-
 def make_full_df_nona(snack_input_new: pd.DataFrame) -> pd.DataFrame:
     """
     Create a non-null dataframe for modeling by dropping rows with NaN on required nutrients.
@@ -51,12 +45,6 @@ def make_full_df_nona(snack_input_new: pd.DataFrame) -> pd.DataFrame:
     return full_df_nona
 
 
-
-
-
-
-
-
 def filter_valid_nutrition_data(df):
     """
     Filter out rows with invalid nutrition data based on validation rules.
@@ -69,13 +57,13 @@ def filter_valid_nutrition_data(df):
     for idx, row in df.iterrows():
         is_valid = True
         
-        # 1) 에너지가 > 1,080 kcal 초과인 경우
+        # 1) Energy above 1,080 kcal per 100 g
         if pd.notna(row["Energy(kcal)"]) and row["Energy(kcal)"] >= 0:
             if row["Energy(kcal)"] > 1080:
                 is_valid = False
                 continue
         
-        # 2) 에너지가 (탄수화물, 단백질, 지방으로 산출한 에너지) 20% 초과인 경우
+        # 2) Declared energy more than 20% away from 4*carb + 9*fat + 4*protein
         if ((pd.notna(row["Energy(kcal)"]) and row["Energy(kcal)"] >= 0) and 
             (pd.notna(row["Carbohydrate(g)"]) and row["Carbohydrate(g)"] >= 0) and
             (pd.notna(row["Protein(g)"]) and row["Protein(g)"] >= 0) and
@@ -91,20 +79,20 @@ def filter_valid_nutrition_data(df):
                 is_valid = False
                 continue
         
-        # 3) 지방, 포화지방, 트랜스지방 이상치 검토
-        # 3-1) 포화지방산 > 지방 인 경우
+        # 3) Fat-component consistency
+        # 3-1) Saturated fat > total fat
         if (pd.notna(row["Total fat(g)"]) and row["Total fat(g)"] >= 0) and (pd.notna(row["Saturated fatty acids(g)"]) and row["Saturated fatty acids(g)"] >= 0):
             if row["Total fat(g)"] < row["Saturated fatty acids(g)"]:
                 is_valid = False
                 continue
         
-        # 3-2) 트랜스지방산 > 지방 인 경우
+        # 3-2) Trans fat > total fat
         if (pd.notna(row["Total fat(g)"]) and row["Total fat(g)"] >= 0) and (pd.notna(row["Trans fatty acids(g)"]) and row["Trans fatty acids(g)"] >= 0):
             if row["Total fat(g)"] < row["Trans fatty acids(g)"]:
                 is_valid = False
                 continue
         
-        # 3-3) '지방' < ('포화지방산'+'트랜스지방산'+'콜레스테롤/1000') 인 경우
+        # 3-3) Total fat < saturated + trans + cholesterol/1000
         if pd.notna(row["Total fat(g)"]) and row["Total fat(g)"] >= 0:
             trans_fat = row["Trans fatty acids(g)"] if pd.notna(row["Trans fatty acids(g)"]) else 0
             sat_fat = row["Saturated fatty acids(g)"] if pd.notna(row["Saturated fatty acids(g)"]) else 0
@@ -116,7 +104,7 @@ def filter_valid_nutrition_data(df):
                 is_valid = False
                 continue
         
-        # 4) 탄수화물, 지방, 단백질 이상치 검토: ('100g 당 탄수화물'+ '100g당 단백질'+ '100g당 지방') ≤ 100
+        # 4) Carbohydrate + protein + fat must not exceed 100 g per 100 g
         total_macros = sum([
             row["Carbohydrate(g)"] if pd.notna(row["Carbohydrate(g)"]) else 0,
             row["Total fat(g)"] if pd.notna(row["Total fat(g)"]) else 0,
@@ -135,10 +123,7 @@ def filter_valid_nutrition_data(df):
     return df
 
 
-def prepare_pipeline(
-    raw_dir: str,
-    prefer_sugars_including_nlea: bool = True,
-) -> pd.DataFrame:
+def prepare_pipeline(raw_dir: str) -> pd.DataFrame:
     """
     Build a standardized dataframe from FoodData Central raw CSVs.
 
@@ -215,9 +200,17 @@ def prepare_pipeline(
         "Vitamin C, total ascorbic acid": "Vitamin C(mg)"
     }
 
-    fn = food_nutrient.merge(nutrient[["id", "name"]], left_on="nutrient_id", right_on="id", how="left")
+    nut_cols = ["id", "name"] + (["unit_name"] if "unit_name" in nutrient.columns else [])
+    fn = food_nutrient.merge(nutrient[nut_cols], left_on="nutrient_id", right_on="id", how="left")
     wanted_fdc_names = set(fdc_to_target.keys())
     fn = fn[fn["name"].isin(wanted_fdc_names)].copy()
+    # FDC names both energy rows "Energy" (KCAL, id 1008; kJ, id 1062). Keep
+    # kcal only, or the de-duplication below picks one of the two arbitrarily.
+    is_energy = fn["name"].eq("Energy")
+    if "unit_name" in fn.columns:
+        fn = fn[~is_energy | fn["unit_name"].astype(str).str.upper().eq("KCAL")]
+    else:
+        fn = fn[~is_energy | fn["nutrient_id"].eq(1008)]
     fn["target_col"] = fn["name"].apply(lambda n: fdc_to_target.get(n, n))
     # Resolve duplicates (no priority needed when using a single sugar name)
     fn = fn.sort_values(["fdc_id", "target_col"]).drop_duplicates(
@@ -240,24 +233,21 @@ def prepare_pipeline(
     ] + PREPARED_OUTPUT_NUTRIENTS
     full = full[[c for c in ordered_cols if c in full.columns]]
 
-    # Apply validity filter to produce non-NaN valid rows where possible
-    try:
-        full_valid = filter_valid_nutrition_data(full)
-    except Exception:
-        full_valid = full.copy()
-
-    return full_valid
+    # Drop rows that fail the rule-based validity checks
+    return filter_valid_nutrition_data(full)
 
 
 __all__ = [
-    "compute_zero_thresholds",
-    "build_snack_input_df_new",
     "make_full_df_nona",
-    "prepare_until_full_df_nona",
     "filter_valid_nutrition_data",
     "prepare_pipeline",
-    "embed_ingredients_and_save",
-    "compute_umap_from_embeddings",
+    "EMBEDDING_DIMS",
+    "DEFAULT_UMAP_DIMS",
+    "get_client",
+    "embed_texts",
+    "embed_texts_cached",
+    "fit_umap_list_columns",
+    "build_embedding_columns",
 ]
 
 
@@ -272,13 +262,37 @@ __all__ = [
 DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[1] / "data/embedding_cache"
 DEFAULT_MODEL = "text-embedding-3-small"
 
+# Length of the raw vector each OpenAI embedding model returns. A model not
+# listed here is probed with one call to learn its length.
+EMBEDDING_DIMS: dict[str, int] = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+}
 
-def get_client(api_key: Optional[str] = None):
+# UMAP output dimensionalities written as umap_<d> columns. 20 is the reported
+# setting; pass dims= (or --embed-dims) for others.
+DEFAULT_UMAP_DIMS: Tuple[int, ...] = (20,)
+
+# UMAP settings, as in the reported train-fit / test-transform build.
+UMAP_N_NEIGHBORS = 30
+UMAP_MIN_DIST = 0.05
+
+
+def get_client(api_key: Optional[str] = None, api_key_file: Optional[str] = None):
+    """OpenAI client. The key comes from ``api_key``, else the first line of
+    ``api_key_file``, else the OPENAI_API_KEY environment variable. No key is
+    stored in this repository; supply your own."""
     from openai import OpenAI  # type: ignore
 
-    key = api_key or os.environ.get("OPENAI_API_KEY", "")
+    key = api_key
+    if not key and api_key_file:
+        key = Path(api_key_file).expanduser().read_text().strip().splitlines()[0].strip()
+    key = key or os.environ.get("OPENAI_API_KEY", "")
     if not key:
-        raise ValueError("OpenAI API key not provided. Pass api_key or set OPENAI_API_KEY env var.")
+        raise ValueError(
+            "OpenAI API key not provided. Pass --api-key-file, or set OPENAI_API_KEY."
+        )
     return OpenAI(api_key=key)
 
 
@@ -358,31 +372,40 @@ def embed_texts_cached(
     return embeddings
 
 
-
-
 # ---------------------------------------------------------------------------
 # Dimensionality reduction
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-
 
 
 def fit_umap_list_columns(
     X: np.ndarray,
     dims: Iterable[int],
     random_state: int,
+    train_mask: Optional[np.ndarray] = None,
+    n_neighbors: int = UMAP_N_NEIGHBORS,
+    min_dist: float = UMAP_MIN_DIST,
 ) -> dict[str, np.ndarray]:
+    """Reduce ``X`` to each of ``dims`` dimensions with UMAP.
+
+    The reducer is fit on the ``train_mask`` rows only and every other row is
+    projected through it with ``transform``, so test rows never shape the
+    layout. ``train_mask=None`` fits on all rows (only for frames with no
+    held-out rows).
+    """
     from umap import UMAP  # type: ignore
 
+    mask = np.ones(len(X), dtype=bool) if train_mask is None else np.asarray(train_mask, dtype=bool)
+    if mask.shape[0] != len(X) or not mask.any():
+        raise ValueError("train_mask must flag at least one row and match X")
     out: dict[str, np.ndarray] = {}
     for n in dims:
-        reducer = UMAP(n_components=int(n), random_state=int(random_state))
-        out[f"UMAP_{int(n)}"] = reducer.fit_transform(X)
+        reducer = UMAP(n_components=int(n), n_neighbors=int(n_neighbors),
+                       min_dist=float(min_dist), random_state=int(random_state))
+        coords = np.empty((len(X), int(n)), dtype=float)
+        coords[mask] = reducer.fit_transform(X[mask])
+        if (~mask).any():
+            coords[~mask] = reducer.transform(X[~mask])
+        out[f"UMAP_{int(n)}"] = coords
     return out
 
 
@@ -398,14 +421,18 @@ DEFAULT_EMBED_PROMPT = (
 
 def build_embedding_columns(
     food_df: pd.DataFrame,
-    dims: Iterable[int] = (20,),
+    dims: Iterable[int] = DEFAULT_UMAP_DIMS,
     ingredient_col: str = "ingredients",
     model: str = DEFAULT_MODEL,
     api_key: Optional[str] = None,
+    api_key_file: Optional[str] = None,
     cache_dir: Path = DEFAULT_CACHE_DIR,
     random_state: int = 42,
     prompt_prefix: str = DEFAULT_EMBED_PROMPT,
     batch_size: int = 256,
+    train_mask: Optional[np.ndarray] = None,
+    n_neighbors: int = UMAP_N_NEIGHBORS,
+    min_dist: float = UMAP_MIN_DIST,
 ) -> Tuple[pd.DataFrame, dict]:
     """Embed the ingredient text and reduce it to ``umap_{d}`` list columns.
 
@@ -417,10 +444,11 @@ def build_embedding_columns(
     so deduplicating first is a large saving on a metered call. The embedding
     step is additionally memoised to ``cache_dir``, so a re-run costs nothing.
 
-    UMAP is fit on whatever rows are passed in. For the reported pipeline that
-    must be the TRAIN rows only, with test transformed through the same fitted
-    reducer; do not fit over a frame that still contains test rows and then
-    split afterwards.
+    UMAP is fit on the TRAIN rows only and every other row is projected
+    through the fitted reducer. The train rows are ``train_mask`` if given,
+    otherwise those of :func:`nutpred.split.assign_train_test` with
+    ``random_state`` as the seed -- the rows run.py trains on when it is given
+    the same table.
 
     Returns ``(df, info)`` where ``df`` has one list-valued ``umap_{d}`` column
     per requested dimension.
@@ -438,18 +466,27 @@ def build_embedding_columns(
     logger.info("Embedding %d distinct ingredient strings (%d rows)", len(uniq), len(prompts))
 
     # Lazy: only a cache miss needs a key.
-    uniq_vecs = embed_texts_cached(uniq, lambda: get_client(api_key), model=model,
+    uniq_vecs = embed_texts_cached(uniq, lambda: get_client(api_key, api_key_file), model=model,
                                    cache_dir=cache_dir, batch_size=batch_size)
     lookup = {t: i for i, t in enumerate(uniq)}
     X = np.asarray([uniq_vecs[lookup[t]] for t in prompts], dtype=np.float64)
 
+    if train_mask is None:
+        from nutpred.split import TRAIN, assign_train_test
+        train_mask = (assign_train_test(df, seed=random_state) == TRAIN).to_numpy()
+    train_mask = np.asarray(train_mask, dtype=bool)
+
     dims = [int(d) for d in dims]
-    logger.info("Fitting UMAP to %s on %s", dims, X.shape)
-    reduced = fit_umap_list_columns(X, dims, random_state=random_state)
+    logger.info("Fitting UMAP to %s on %d train rows, transforming %d others",
+                dims, int(train_mask.sum()), int((~train_mask).sum()))
+    reduced = fit_umap_list_columns(X, dims, random_state=random_state, train_mask=train_mask,
+                                    n_neighbors=n_neighbors, min_dist=min_dist)
 
     for d in dims:
         arr = reduced[f"UMAP_{d}"]
-        df[f"umap_{d}"] = [str(list(np.round(row, 6))) for row in arr]
+        # .tolist() gives plain Python floats, so the cell reads "[1.23, ...]".
+        # str(list(array)) would write "[np.float64(1.23), ...]" under NumPy 2.
+        df[f"umap_{d}"] = [str(np.round(row, 6).tolist()) for row in arr]
 
     info = {
         "n_rows": len(df),
@@ -457,5 +494,7 @@ def build_embedding_columns(
         "embedding_model": model,
         "embedding_dim": int(X.shape[1]),
         "umap_dims": dims,
+        "n_fit_rows": int(train_mask.sum()),
+        "n_transformed_rows": int((~train_mask).sum()),
     }
     return df, info
