@@ -1,6 +1,6 @@
 # nutpred
 
-Code for **"[Paper title]"** ([Author names], *Journal of Food Composition and Analysis*, [year]).
+Code for **"Predicting Calcium, Dietary Fiber, and Iron Content in Branded Snack Foods Using Hybrid Ingredient Representations and Knowledge-Guided Features"** (Seoyun Jang, 2026).
 
 nutpred predicts the **calcium, dietary fiber and iron** content of packaged foods from information already on the label: the macronutrient panel and the ingredient list.
 
@@ -11,7 +11,7 @@ nutpred predicts the **calcium, dietary fiber and iron** content of packaged foo
 Features are built from:
 
 - the eight base panel nutrients (`nut8`);
-- ingredient features from the ingredient list: binary presence, positional score and dimension-reduced text embeddings (`umap_20`);
+- ingredient features from the ingredient list: binary presence (`binary`), positional score (`score`) and dimension-reduced text embeddings (`umap_20`);
 - optional knowledge-guided features from a constrained ingredient-ratio optimization (CVXPY/OSQP) using USDA SR Legacy reference profiles.
 
 Models are XGBoost regressors, optionally as a two-stage **hurdle model** (a zero/non-zero classifier, then a regressor for non-zero values), tuned with Optuna.
@@ -82,15 +82,7 @@ Each run writes test-set metrics (`metrics_*.csv`), per-product predictions (`df
 
 ## Citation
 
-```bibtex
-@article{[citekey],
-  title   = {[Paper title]},
-  author  = {[Author names]},
-  journal = {Journal of Food Composition and Analysis},
-  year    = {[year]},
-  doi     = {[DOI]}
-}
-```
+To be added.
 
 ## License
 
@@ -98,4 +90,4 @@ To be added.
 
 ## Contact
 
-[Corresponding author name and email], or open an issue on this repository.
+Seoyun Jang (syjang115@snu.ac.kr) or open an issue on this repository.
