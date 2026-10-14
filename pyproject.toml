@@ -11,9 +11,8 @@ readme = "README.md"
 # hard floor; 3.11 is the only version the pipeline and tests are run on.
 requires-python = ">=3.11"
 # No license is declared and no LICENSE file ships; see README.md.
-# TODO(release): replace before submission -- these are placeholders.
 authors = [
-  { name = "TODO Author Name", email = "todo@example.invalid" }
+  { name = "Seoyun Jang", email = "syjang115@snu.ac.kr" }
 ]
 keywords = ["nutrition", "ingredients", "xgboost", "cvxpy", "optimization", "machine-learning"]
 
