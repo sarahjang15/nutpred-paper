@@ -37,7 +37,8 @@ EXTRA_PANEL = [
     "Trans fatty acids(g)", "Potassium, K", "Vitamin A", "Vitamin A, IU",
     "Vitamin A, RAE", "Vitamin C, total ascorbic acid",
 ]
-UMAP_DIMS = [2, 5, 10, 20]
+# The dimensionalities the pipeline can read back (nutpred.prepare.SUPPORTED_UMAP_DIMS).
+UMAP_DIMS = [2, 10, 20]
 
 # A toy ingredient vocabulary. The thesaurus maps surface forms in the
 # ``ingredients`` string onto these preferred descriptors, and the ingnut table

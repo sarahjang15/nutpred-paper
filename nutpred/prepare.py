@@ -271,8 +271,15 @@ EMBEDDING_DIMS: dict[str, int] = {
 }
 
 # UMAP output dimensionalities written as umap_<d> columns. 20 is the reported
-# setting; pass dims= (or --embed-dims) for others.
+# setting; pass dims= (or --embed-dims) to build the other comparison arms.
 DEFAULT_UMAP_DIMS: Tuple[int, ...] = (20,)
+
+# The dimensionalities the rest of the pipeline can actually read back:
+# nutpred.preprocess.ensure_umap_columns expands exactly these, and
+# run.py's GROUP_COL_GETTERS exposes exactly these to --ing-feature. Writing a
+# umap_<d> column for any other d produces a column nothing downstream reads,
+# so the builders reject it rather than emit it silently.
+SUPPORTED_UMAP_DIMS: Tuple[int, ...] = (2, 10, 20)
 
 # UMAP settings, as in the reported train-fit / test-transform build.
 UMAP_N_NEIGHBORS = 30

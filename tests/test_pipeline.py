@@ -6,6 +6,7 @@ choose anything, and every entry point agrees on which rows are test rows.
 from __future__ import annotations
 
 import importlib
+import pathlib
 
 import numpy as np
 import pandas as pd
@@ -134,6 +135,38 @@ def test_embedding_dims_known_models():
     from nutpred.prepare import DEFAULT_UMAP_DIMS, EMBEDDING_DIMS
     assert EMBEDDING_DIMS["text-embedding-3-small"] == 1536
     assert DEFAULT_UMAP_DIMS == (20,)
+
+
+def test_embed_dims_rejects_what_the_pipeline_cannot_read():
+    """A umap_<d> column only matters if ensure_umap_columns expands it and
+    --ing-feature exposes it. --embed-dims must refuse the rest rather than
+    write a column that is then silently ignored."""
+    from nutpred.build_ingredient_features import _parse_dims
+    from nutpred.prepare import SUPPORTED_UMAP_DIMS
+
+    assert _parse_dims("2,10,20") == [2, 10, 20]
+    for d in SUPPORTED_UMAP_DIMS:
+        assert _parse_dims(str(d)) == [d]
+    for raw in ("5", "20,5", "7"):
+        with pytest.raises(SystemExit, match="nothing downstream reads"):
+            _parse_dims(raw)
+
+
+def test_supported_umap_dims_match_the_consumers():
+    """The guard is only honest if it names exactly the dims both consumers
+    handle: ensure_umap_columns' expansion and run.py's feature-group getters."""
+    import re
+
+    from nutpred.prepare import SUPPORTED_UMAP_DIMS
+
+    run_py = (pathlib.Path(__file__).resolve().parents[1] / "run.py").read_text(encoding="utf-8")
+    exposed = {int(d) for d in re.findall(r'"umap_(\d+)": lambda df', run_py)}
+    assert exposed == set(SUPPORTED_UMAP_DIMS)
+
+    df = pd.DataFrame({f"umap_{d}": [str(list(range(d)))] for d in SUPPORTED_UMAP_DIMS})
+    importlib.import_module("nutpred.preprocess").ensure_umap_columns(df)
+    for d in SUPPORTED_UMAP_DIMS:
+        assert f"umap_{d}_{d}" in df.columns
 
 
 # --- vocabulary ---------------------------------------------------------------

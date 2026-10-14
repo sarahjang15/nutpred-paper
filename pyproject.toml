@@ -7,7 +7,9 @@ name = "nutpred"
 version = "0.3.0"
 description = "Predict Calcium/Fiber/Iron from ingredients + nutrients via ML and convex optimization."
 readme = "README.md"
-requires-python = ">=3.9"
+# nutpred/metrics.py uses PEP 604 unions (`str | None`) at def time, so 3.10 is the
+# hard floor; 3.11 is the only version the pipeline and tests are run on.
+requires-python = ">=3.11"
 # No license is declared and no LICENSE file ships; see README.md.
 # TODO(release): replace before submission -- these are placeholders.
 authors = [

@@ -8,7 +8,7 @@ documented by example and a smoke test runs on a fresh clone:
 data/
 ├── make_example_data.py          # writes the three files below
 ├── example/
-│   ├── food_df.example.csv       # 240 synthetic products, 32 columns
+│   ├── food_df.example.csv       # 240 synthetic products, 30 columns
 │   ├── thesaurus.example.xlsx    # 34 surface-form -> descriptor mappings
 │   └── ingnut_df.example.csv     # 20 ingredients x 25 nutrients
 └── README.md
@@ -48,7 +48,7 @@ Carried through but not required by the core model: `Trans fatty acids(g)`,
 `Potassium, K`, `Vitamin A`, `Vitamin A, IU`, `Vitamin A, RAE`,
 `Vitamin C, total ascorbic acid`.
 
-Embedding columns `umap_2`, `umap_5`, `umap_10`, `umap_20`. Each cell is a
+Embedding columns `umap_2`, `umap_10`, `umap_20`. Each cell is a
 **string holding a JSON-style list** of that many floats, e.g.
 `"[5.0385236, 5.0887556]"` for `umap_2`. The pipeline expands these into
 `umap_20_1 … umap_20_20` etc.; it does **not** fit UMAP itself. Build them with

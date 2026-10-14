@@ -34,7 +34,9 @@ No food data is distributed. The analysis uses the USDA FoodData Central **Brand
 
 ```bash
 python data/make_example_data.py             # synthetic example inputs
-python run.py --smoke-test-rows 200 --hurdle # quick end-to-end check
+python run.py --smoke-test-rows 200 --hurdle --n-trials 5   # quick end-to-end check
+# --n-trials 5 keeps this to a couple of minutes; the paper's setting is 100 (the
+# default), which takes about half an hour even on 200 synthetic rows.
 ```
 
 ## Reproducing the paper

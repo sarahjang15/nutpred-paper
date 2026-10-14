@@ -63,7 +63,8 @@ from pathlib import Path
 import pandas as pd
 
 from nutpred.prepare import (
-    DEFAULT_CACHE_DIR, DEFAULT_MODEL, DEFAULT_UMAP_DIMS, UMAP_MIN_DIST, UMAP_N_NEIGHBORS, build_embedding_columns,
+    DEFAULT_CACHE_DIR, DEFAULT_MODEL, DEFAULT_UMAP_DIMS, SUPPORTED_UMAP_DIMS, UMAP_MIN_DIST,
+    UMAP_N_NEIGHBORS, build_embedding_columns,
 )
 from nutpred.preprocess import build_ingredient_feature_blocks
 from nutpred.split import SPLIT_COL, TRAIN, assign_train_test
@@ -79,6 +80,16 @@ def _parse_dims(raw: str) -> list[int]:
     dims = [int(x) for x in str(raw).replace(" ", "").split(",") if x]
     if not dims or any(d < 1 for d in dims):
         raise SystemExit(f"--embed-dims must be positive integers, got {raw!r}")
+    unsupported = sorted({d for d in dims if d not in SUPPORTED_UMAP_DIMS})
+    if unsupported:
+        supported = ", ".join(str(d) for d in SUPPORTED_UMAP_DIMS)
+        raise SystemExit(
+            f"--embed-dims {raw!r}: nothing downstream reads umap_"
+            f"{', umap_'.join(str(d) for d in unsupported)}. "
+            f"ensure_umap_columns expands only umap_{{{supported}}} and --ing-feature "
+            f"exposes only those, so the column would be written and then ignored. "
+            f"Supported dimensionalities: {supported}."
+        )
     return dims
 
 
@@ -123,8 +134,10 @@ def main() -> None:
 
     emb = ap.add_argument_group("embedding (--embed)")
     emb.add_argument("--embed-dims", type=str, default=",".join(map(str, DEFAULT_UMAP_DIMS)),
-                     help="UMAP dimensionalities, comma-separated (default 20, "
-                          "the reported setting)")
+                     help="UMAP dimensionalities, comma-separated (default 20, the "
+                          "reported setting). Only "
+                          + ", ".join(str(d) for d in SUPPORTED_UMAP_DIMS)
+                          + " are accepted -- the rest of the pipeline reads no others.")
     emb.add_argument("--embed-model", type=str, default=DEFAULT_MODEL)
     emb.add_argument("--api-key-file", type=Path, default=None,
                      help="file whose first line is your OpenAI key; falls back to the "
