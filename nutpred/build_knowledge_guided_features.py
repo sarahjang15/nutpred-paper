@@ -352,9 +352,10 @@ def _run_optimization(mapped_tokens: List[List[int]], X_all: np.ndarray, Y_mat: 
 
     if use_yf and not yf_col:
         raise ValueError(
-            "use_yf=True requires yf_col with per-row yield-factor lists aligned to "
-            "ingredient_col (e.g. opt_pred_yf_topn after merge_yf_into_snack). "
-            "Legacy data/yf_by_food.pkl is no longer supported."
+            "use_yf=True requires yf_col: a column of per-row yield-factor lists, one "
+            "value per entry of the row's mapped ingredient list. Build it with "
+            "`python -m nutpred.predict_yield_factors --out-csv <file>`, which writes "
+            "`pred_yield_factors`, and pass that name as --yf-column."
         )
     if use_yf and yf_col:
         logger.info("Using per-row yield factors from column %s", yf_col)

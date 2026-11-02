@@ -29,6 +29,7 @@ Every entry point takes its data by argument; nothing is hard-coded to a path.
 | `--food-df` | One row per packaged food: the label panel, the ingredient string, and precomputed UMAP embedding columns | `data/example/food_df.example.csv` |
 | `--thesaurus-df` | Maps surface ingredient spellings to preferred descriptors | `data/example/thesaurus.example.xlsx` |
 | `--ingnut-df` | Reference nutrient profile per preferred descriptor, used by the CVXPY optimizer | `data/example/ingnut_df.example.csv` |
+| `--yf-column` | Name of a column in `--food-df` holding per-ingredient yield factors; only for `--method yf_opt` | written by `nutpred.predict_yield_factors` |
 
 ### `--food-df`
 
@@ -57,6 +58,29 @@ Embedding columns `umap_2`, `umap_10`, `umap_20`. Each cell is a
 All nutrient values are **per 100 g**. `serving_size` is numeric and
 `serving_size_unit` is one of `g`/`grm`/`gm`/`ml`/`mlt` for the per-serving
 label-rounding rules to apply; any other unit falls back to an exact-zero test.
+
+### `--yf-column` (only for `--method yf_opt`)
+
+Not a file but a column of `--food-df`: for each product, a list of processing
+yield factors, one per entry of that row's mapped ingredient list and in the same
+order, serialized like the embedding columns (`"[0.95, 0.8, 1.0]"`). A yield factor
+is the mass an ingredient keeps in the finished product over the mass that went in,
+so 0 < YF <= 1; the optimizer divides that ingredient's reference profile by it.
+
+Build the column with
+
+```bash
+python -m nutpred.predict_yield_factors \
+  --food-df <your table> --thesaurus-df <your thesaurus> \
+  --api-key-file <your key> --out-csv food_df_yf.csv
+```
+
+which estimates them with an LLM from the product description, brand, category,
+declared base panel and ordered ingredient list, and writes `pred_yield_factors`.
+The three target nutrients are never sent to the model. Responses are cached, so a
+re-run is free. If a list's length does not match the row's mapped ingredient
+count, that product silently falls back to unit yield factors with a warning, so
+check the log when supplying the column yourself.
 
 ### `--thesaurus-df`
 
