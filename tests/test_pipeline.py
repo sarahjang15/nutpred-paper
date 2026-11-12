@@ -220,5 +220,5 @@ def test_optimizer_solves_with_each_solver(solver):
     X_all = rng.uniform(0, 50, size=(4, 8))                     # 4 ingredients x 8 nutrients
     Y = np.array([0.6, 0.3, 0.1, 0.0]) @ X_all
     _, failed = _run_optimization([[0, 1, 2, 3]], X_all, Y[None, :], solver_name=solver,
-                                  top_list=list("abcd"), use_yf=False)
+                                  top_list=list("abcd"), use_yf=False, residual_weights=np.ones(8))
     assert failed == []

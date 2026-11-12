@@ -15,6 +15,16 @@ later ones). The recovered ratios are then combined with the reference profiles
 to give an auxiliary prediction per target, denoted ``ing_pred`` in the
 manuscript and written here as ``<target>_ing_pred``.
 
+Mass basis. The fitted ratios are on the raw (as-added) basis: a_i is the raw
+mass of ingredient i per unit finished-product mass. Reference profiles are
+analytical values for the raw ingredient, so they are used unscaled, both when
+reconstructing the declared panel and when projecting the targets. Predicted
+yield factors enter only through the total-mass constraint, sum(YF_i * a_i)
+<= 1, since YF_i * a_i is the finished mass contributed by ingredient i. The
+label-order constraint applies to the raw ratios a_i, which is what the
+declared ingredient order refers to. A raw-mass sum above one is therefore
+legitimate for a product that loses mass in processing.
+
 Run it as a pre-step, before run.py::
 
     python -m nutpred.build_knowledge_guided_features \\
@@ -99,7 +109,14 @@ def make_residual_weights(X_full, Y_mat, mode="std"):
     """
     Returns weights w (length p) so the loss is || diag(w) (X_j b - y_j) ||^2.
     
-    Modes: std, pminmax, logiqr
+    Y_mat must contain only the training product panels. Reference profiles
+    are pooled with those panels (one row per profile/product), before any
+    per-product yield correction. std uses sample SD (ddof=1), ignoring NaN.
+    Inverse scales use a 1e-9 floor, are sanitized/clipped to [1e-6, 1e6],
+    then divided by their arithmetic mean. Zero SD therefore receives 1e6
+    before normalization; an undefined SD receives 1. Modes: std, pminmax,
+    logiqr. This function is also available for explicitly labeled historical
+    comparisons; callers are responsible for the supplied population.
     """
     EPS = 1e-9
     A = np.vstack([X_full.T, Y_mat])  # shape (K+n, p)
@@ -140,6 +157,7 @@ def predict_ingnut_weights_and_targets(food_df: pd.DataFrame, ingnut_df: pd.Data
                                      use_yf: bool = True,
                                      yf_col: Optional[str] = None,
                                      prediction_suffix: str = "_pred_ingnut_yf_aux",
+                                     residual_weights=None, diagnostics=None,
                                      **kwargs) -> Tuple[pd.DataFrame, np.ndarray, List[str], List[int]]:
     """
     Predict ingredient weights and target nutrients using optimization.
@@ -215,6 +233,8 @@ def predict_ingnut_weights_and_targets(food_df: pd.DataFrame, ingnut_df: pd.Data
             use_yf=bool(use_yf),
             yf_col=yf_col,
             ingredient_col=ingredient_col,
+            residual_weights=residual_weights,
+            diagnostics=diagnostics,
         )
         
         logger.info(f"Optimization complete. Weight matrix: {preds_w.shape}")
@@ -222,6 +242,7 @@ def predict_ingnut_weights_and_targets(food_df: pd.DataFrame, ingnut_df: pd.Data
         
         # Generate predictions for all samples
         logger.info("Generating predictions for all samples...")
+        # Same raw ratios against the same raw profiles the fit used.
         Y_pred = preds_w @ X_all  # (N, D) prediction matrix for nut8 nutrients
         
         # Add prediction columns for nut8 nutrients
@@ -240,7 +261,7 @@ def predict_ingnut_weights_and_targets(food_df: pd.DataFrame, ingnut_df: pd.Data
                 # Get the target nutrient values from ingnut_df for all variants
                 target_values = ingnut_df[ingnut_col].values  # (K,) array
                 
-                # Use the same weights to predict target nutrients
+                # Use the same raw ratios and unscaled profiles as the fit
                 target_pred = preds_w @ target_values  # (N,) array
                 food_df[f"{target}_opt_{group_name}"] = target_pred
                 # Backward-compatible alias expected by unified runner
@@ -292,7 +313,8 @@ def _run_optimization(mapped_tokens: List[List[int]], X_all: np.ndarray, Y_mat: 
                      solver_name: str = "osqp", scale: str = "std", top_list: List[str] = None,
                      food_df: pd.DataFrame = None, min_weight: float = 0.0,
                      use_yf: bool = True, yf_col: Optional[str] = None,
-                     ingredient_col: str = "mapped_list_topk_only") -> Tuple[np.ndarray, List[str], List[int]]:
+                     ingredient_col: str = "mapped_list_topk_only",
+                     residual_weights=None, diagnostics=None) -> Tuple[np.ndarray, List[int]]:
     """
     Run optimization for all samples and return weights matrix, variant universe, and failed indices.
     
@@ -337,7 +359,11 @@ def _run_optimization(mapped_tokens: List[List[int]], X_all: np.ndarray, Y_mat: 
     
     # Calculate scaling weights
     logger.info(f"Calculating scaling weights using mode: {scale}")
-    W_vec = make_residual_weights(X_full, Y_mat, mode=scale)  # length p
+    if residual_weights is None:
+        raise ValueError("Pass fitted residual_weights; cohort-wide estimation is disabled")
+    W_vec = np.asarray(residual_weights, dtype=float)
+    if W_vec.shape != (p,) or not np.isfinite(W_vec).all() or (W_vec <= 0).any():
+        raise ValueError("residual_weights must be a finite positive vector of panel width")
     W_mat = np.diag(W_vec)  # (p x p)
     logger.info(f"Scaling weights calculated.")
     
@@ -360,7 +386,7 @@ def _run_optimization(mapped_tokens: List[List[int]], X_all: np.ndarray, Y_mat: 
     if use_yf and yf_col:
         logger.info("Using per-row yield factors from column %s", yf_col)
     else:
-        logger.info("Optimization without yield-factor scaling (X unscaled)")
+        logger.info("Optimization with unit yield factors; mass constraint reduces to sum(a) <= 1")
 
     # Solve per snack
     logger.info("Starting optimization for each sample...")
@@ -372,6 +398,9 @@ def _run_optimization(mapped_tokens: List[List[int]], X_all: np.ndarray, Y_mat: 
 
         if not Sj:
             logger.debug(f"Sample {j}: No ingredients to optimize")
+            if diagnostics is not None:
+                diagnostics.append(dict(row_position=j, status="no_ingredients", fallback=False,
+                                        reason="no_ingredients", weight_sum=0.0, degenerate=True))
             continue
 
         Kj = len(Sj)
@@ -411,16 +440,16 @@ def _run_optimization(mapped_tokens: List[List[int]], X_all: np.ndarray, Y_mat: 
                     j,
                     yf_col,
                 )
-        Xj = Xj / yf_j[np.newaxis, :]
+        # Xj stays raw; var is the raw-basis ratio a = finished mass fraction / YF.
         var = cp.Variable(Kj, pos=True) # positive
         
         # Set up constraints based on constraint mode
         cons = []
         #cons.append(var >= 0.001) # positive constraint
         if constraint in ("eq1", "eq1_mono"):
-            cons.append(cp.sum(var) == 1)
+            cons.append(cp.sum(cp.multiply(var, yf_j)) == 1)
         elif constraint in ("le1", "le1_mono"):
-            cons.append(cp.sum(var) <= 1)
+            cons.append(cp.sum(cp.multiply(var, yf_j)) <= 1)
         elif constraint in ("nnls_only", "nnls_mono"):
             pass  # Only non-negativity constraint (handled by nonneg=True)
         else:
@@ -438,23 +467,39 @@ def _run_optimization(mapped_tokens: List[List[int]], X_all: np.ndarray, Y_mat: 
         resid = (W_mat @ Xj) @ var - (W_mat @ Y_mat[j])
         prob = cp.Problem(cp.Minimize(loss(resid, var)), cons)
         
+        reason = ""
         try:
             prob.solve(solver=solver_enum, **solver_kwargs)
             if prob.status not in ["optimal", "optimal_inaccurate"]:
-                logger.warning(f"Sample {j}: Solver status '{prob.status}', using fallback")
-                failed.append(j)
-                wj = np.ones(Kj) / Kj
-            else: 
-                wj = var.value
-                #logger.info(f"Sample {j}: Optimization successful with {Kj} ingredients")
+                reason = "solver_status"
+            wj = None if var.value is None else np.asarray(var.value).reshape(-1)
+            if not reason:
+                if wj is None or wj.shape != (Kj,) or not np.isfinite(wj).all():
+                    reason = "invalid_solution"
+                elif (wj < mw - 1e-7).any():
+                    reason = "lower_bound_violation"
+                elif constraint.endswith("_mono") and (np.diff(wj) > 1e-7).any():
+                    reason = "order_violation"
+                elif constraint.startswith("le1") and (wj * yf_j).sum() > 1 + 1e-7:
+                    reason = "mass_violation"
+                elif constraint.startswith("eq1") and abs((wj * yf_j).sum() - 1) > 1e-7:
+                    reason = "mass_violation"
         except Exception as e:
             logger.warning(f"Sample {j}: Optimization failed ({str(e)}), using uniform weights")
+            reason = "solver_exception"
+        if reason:
             failed.append(j)
             wj = np.ones(Kj) / Kj
+        if diagnostics is not None:
+            diagnostics.append(dict(row_position=j, status=prob.status or "exception",
+                                    fallback=bool(reason), reason=reason,
+                                    weight_sum=float(wj.sum()),
+                                    final_mass=float((wj * yf_j).sum()),
+                                    degenerate=bool(wj.sum() <= max(1e-7, 1.01 * Kj * mw))))
         
         # Store results
         full = np.zeros(K)
-        full[Sj] = wj
+        np.add.at(full, Sj, wj)  # repeated canonical tokens contribute additively
         preds[j] = full
     
     logger.info(f"Optimization complete. {len(failed)} samples failed, using fallback weights")
@@ -700,6 +745,8 @@ def build_knowledge_guided_features(
     yf_col: Optional[str] = None,
     weight_features: bool = False,
     min_weight: float = 1e-6,
+    scaling_train_mask=None,
+    residual_weights=None,
 ) -> Tuple[pd.DataFrame, List[str], Dict]:
     """Add the ``<target>_ing_pred`` auxiliary columns to ``food_df``.
 
@@ -708,11 +755,20 @@ def build_knowledge_guided_features(
         ``"yf_opt"``  the same, with the predicted yield-factor correction; needs ``yf_col``
         ``"sum"``     the plain reference-nutrient sum baseline, no optimization
 
-    The defaults are the reported settings: ``constraint="le1_mono"``
-    (w_i >= min_weight, w_i >= w_{i+1}, sum(w) <= 1), ``min_weight`` (epsilon)
-    1e-6, ``ridge`` (lambda) 0, per-nutrient 1/SD residual scaling, OSQP.
+    The fitted variable is the raw-basis ratio a_i. The defaults are the
+    reported settings: ``constraint="le1_mono"`` (a_i >= min_weight,
+    a_i >= a_{i+1}, sum(YF_i * a_i) <= 1), ``min_weight`` (epsilon) 1e-6,
+    ``ridge`` (lambda) 0, per-nutrient 1/SD residual scaling, OSQP. Under
+    ``"opt"`` and ``"sum"`` every YF_i is 1, so the mass constraint reduces to
+    sum(a) <= 1 and the ratios coincide with finished-product mass fractions.
+    Under ``"yf_opt"`` they do not: the emitted ``opt_pred_weights_*`` columns
+    are raw ratios, whose sum may legitimately exceed one.
 
     Returns ``(df, aux_cols, info)``.
+
+    Scaling is fit on the shared training split unless scaling_train_mask is
+    supplied. At deployment pass the saved residual_weights, so an inference
+    batch cannot refit W. info records those weights and solver diagnostics.
     """
     if method not in ("opt", "yf_opt", "sum"):
         raise ValueError(f"method must be opt|yf_opt|sum, got {method!r}")
@@ -720,6 +776,26 @@ def build_knowledge_guided_features(
         raise ValueError("method='yf_opt' requires yf_col")
 
     aux_cols = [f"{t}{AUX_SUFFIX}" for t in C.TARGET_NUT3]
+
+    diagnostics = []
+    scaling_info = {}
+    if method != "sum":
+        if residual_weights is None:
+            if scaling_train_mask is None:
+                from nutpred.split import train_mask
+                scaling_train_mask = train_mask(food_df)
+            mask = np.asarray(scaling_train_mask)
+            if mask.dtype != bool or mask.shape != (len(food_df),) or not mask.any():
+                raise ValueError("scaling_train_mask must select at least one training product")
+            panels = food_df.loc[mask, C.NUT8].to_numpy(dtype=float)
+            refs = ingnut_df[[INGNUT_MAPPING[c] for c in C.NUT8]].to_numpy(dtype=float)
+            residual_weights = make_residual_weights(refs.T, panels, mode=scale)
+            scaling_info = dict(population="reference_profiles_plus_training_products",
+                                n_training_products=int(mask.sum()), n_reference_profiles=len(refs))
+        else:
+            scaling_info = dict(population="frozen_supplied_weights")
+        scaling_info.update(mode=scale, columns=list(C.NUT8), ddof=1,
+                            weights=np.asarray(residual_weights).tolist())
 
     if method == "sum":
         out = predict_ingnut_sum_targets(
@@ -741,7 +817,13 @@ def build_knowledge_guided_features(
             solver_name=solver_name,
             min_weight=min_weight,
             prediction_suffix=AUX_SUFFIX,
+            residual_weights=residual_weights, diagnostics=diagnostics,
         )
+
+    if diagnostics:
+        audit = pd.DataFrame(diagnostics)
+        for col in ["status", "fallback", "reason", "weight_sum", "final_mass", "degenerate"]:
+            out[f"optimization_{col}"] = audit[col].to_numpy()
 
     out = mask_aux_to_missing_if_uncovered(
         out, aux_cols, ingredient_col=ingredient_col, top_list=top_list,
@@ -763,6 +845,12 @@ def build_knowledge_guided_features(
         "coverage_pct": 100.0 * covered / max(len(out), 1),
         "aux_cols": aux_cols,
         "n_failed": 0 if method == "sum" else len(failed),
+        "scaling": scaling_info,
+        "solver": solver_name,
+        "status_counts": pd.Series([d["status"] for d in diagnostics], dtype=str).value_counts().to_dict(),
+        "n_no_ingredients": sum(d["status"] == "no_ingredients" for d in diagnostics),
+        "n_degenerate": sum(d["degenerate"] for d in diagnostics),
+        "failure_reasons": pd.Series([d["reason"] for d in diagnostics if d["fallback"]], dtype=str).value_counts().to_dict(),
     }
     return out, aux_cols, info
 
@@ -790,6 +878,8 @@ def main() -> None:
     ap.add_argument("--ingnut-df", type=Path,
                     default=root / "data/example/ingnut_df.example.csv")
     ap.add_argument("--out-csv", type=Path, required=True)
+    ap.add_argument("--scaling-weights-json", type=Path,
+                    help="reuse the scaling object from an earlier output .audit.json")
     ap.add_argument("--method", choices=["opt", "yf_opt", "sum"], default="opt",
                     help="opt (reported), yf_opt (with yield factors), "
                          "sum (reference-nutrient sum baseline)")
@@ -830,6 +920,13 @@ def main() -> None:
     # column names; same ordering run.py uses.
     ingnut_cols = [INGNUT_MAPPING[c] for c in C.NUT8]
 
+    import json
+    frozen_weights = None
+    if args.scaling_weights_json:
+        saved = json.loads(args.scaling_weights_json.read_text())["scaling"]
+        if saved["columns"] != list(C.NUT8):
+            raise ValueError("Saved scaling column order differs from nut8")
+        frozen_weights = saved["weights"]
     out, aux_cols, info = build_knowledge_guided_features(
         food, ingnut, top_list, ingnut_cols,
         method=args.method,
@@ -841,6 +938,7 @@ def main() -> None:
         min_weight=args.opt_min_weight,
         yf_col=args.yf_column,
         weight_features=args.weight_features,
+        residual_weights=frozen_weights,
     )
 
     log(f"method={info['method']}  columns: {', '.join(aux_cols[:4])}"
@@ -853,6 +951,7 @@ def main() -> None:
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.out_csv, index=False)
+    args.out_csv.with_suffix(".audit.json").write_text(json.dumps(info, indent=2) + "\n")
     log(f"Wrote {args.out_csv} ({out.shape[0]} rows, {out.shape[1]} cols)")
 
 
