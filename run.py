@@ -749,19 +749,20 @@ if __name__ == "__main__":
                        help="Type of exclusion: 'ingredients' (default) or 'category'")
 
     # File paths
-    # No real data ships with this repository. The defaults point at the
-    # synthetic examples written by `python data/make_example_data.py`, so a
-    # fresh clone runs end to end; pass your own paths to do anything real.
+    # The reported cohort does not ship with this repository. --food-df
+    # defaults to the 104-product example drawn from it, and the two USDA
+    # reference tables ship whole, so a fresh clone runs end to end; pass
+    # your own --food-df to reproduce anything.
     # See data/README.md for the column contract each input must satisfy.
-    ap.add_argument("--food-df", type=str, default=str(REPO_ROOT / "data/example/food_df.example.csv"),
+    ap.add_argument("--food-df", type=str, default=str(REPO_ROOT / "data/food_df.example.csv"),
                     help="per-food panel + ingredient string + umap_* columns "
-                         "(default: the synthetic example)")
-    ap.add_argument("--thesaurus-df", type=str, default=str(REPO_ROOT / "data/example/thesaurus.example.xlsx"),
+                         "(default: the 104-product example)")
+    ap.add_argument("--thesaurus-df", type=str, default=str(REPO_ROOT / "data/thesaurus.xlsx"),
                     help="surface ingredient term -> preferred descriptor "
-                         "(default: the synthetic example)")
-    ap.add_argument("--ingnut-df", type=str, default=str(REPO_ROOT / "data/example/ingnut_df.example.csv"),
+                         "(default: the full USDA Ingredient Thesaurus)")
+    ap.add_argument("--ingnut-df", type=str, default=str(REPO_ROOT / "data/ingnut_df.example.csv"),
                     help="per-ingredient reference nutrient profile "
-                         "(default: the synthetic example)")
+                         "(default: the paper's top-100 pool)")
     ap.add_argument(
         "--no-ingredient-cap",
         action="store_true",

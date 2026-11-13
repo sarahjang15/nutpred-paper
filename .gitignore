@@ -12,12 +12,16 @@
 *credential*
 
 # --- Data --------------------------------------------------------------
-# No real food data ships with this repository. Users supply their own via
-# --food-df / --thesaurus-df / --ingnut-df. Only the synthetic examples in
-# data/example/ and the generator that writes them are tracked.
+# The reported 14,019-product cohort is not distributed; users supply their
+# own food table via --food-df. Tracked here: the 104-product example drawn
+# from the cohort, the two USDA reference tables the analysis used in full
+# (thesaurus, top-100 profiles), the feature diagram and the README. The
+# sampler that drew the example lives in nutpred/.
 data/*
-!data/example/
-!data/make_example_data.py
+!data/food_df.example.csv
+!data/thesaurus.xlsx
+!data/ingnut_df.example.csv
+!data/figure2.png
 !data/README.md
 
 # USDA FoodData Central bulk exports, wherever they are placed
@@ -36,11 +40,16 @@ logs/
 *.log
 nohup.out
 
+# Local experiment trees: frozen code copies, Optuna databases and result
+# tables kept beside the repo for the manuscript revision. Not part of the
+# release.
+experiments/
+
 # Figures and results are not distributed with the code, with one exception:
 # the ingredient-feature diagram is documentation and is tracked.
 figures/
 *.png
-!docs/figure2.png
+!data/figure2.png
 *.pdf
 *.pptx
 

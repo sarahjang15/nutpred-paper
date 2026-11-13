@@ -28,9 +28,9 @@ legitimate for a product that loses mass in processing.
 Run it as a pre-step, before run.py::
 
     python -m nutpred.build_knowledge_guided_features \\
-      --food-df data/example/food_df.example.csv \\
-      --thesaurus-df data/example/thesaurus.example.xlsx \\
-      --ingnut-df data/example/ingnut_df.example.csv \\
+      --food-df data/food_df.example.csv \\
+      --thesaurus-df data/thesaurus.xlsx \\
+      --ingnut-df data/ingnut_df.example.csv \\
       --out-csv data/model_input_kg.csv
 
 run.py then picks the ``*_ing_pred`` columns up automatically and appends them
@@ -872,11 +872,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--food-df", type=Path,
-                    default=root / "data/example/food_df.example.csv")
+                    default=root / "data/food_df.example.csv")
     ap.add_argument("--thesaurus-df", type=Path,
-                    default=root / "data/example/thesaurus.example.xlsx")
+                    default=root / "data/thesaurus.xlsx")
     ap.add_argument("--ingnut-df", type=Path,
-                    default=root / "data/example/ingnut_df.example.csv")
+                    default=root / "data/ingnut_df.example.csv")
     ap.add_argument("--out-csv", type=Path, required=True)
     ap.add_argument("--scaling-weights-json", type=Path,
                     help="reuse the scaling object from an earlier output .audit.json")

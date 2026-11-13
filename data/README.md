@@ -1,22 +1,65 @@
 # `data/` — bring your own
 
-**No real food data ships with this repository.** What is tracked here is a
-generator and the synthetic files it writes, so that the input contract is
-documented by example and a smoke test runs on a fresh clone:
+**The reported cohort of 14,019 snack products is not distributed.** What is
+tracked here is a small example drawn from it, together with the two reference
+tables the analysis used in full, so that the input contract is documented by
+example and a smoke test runs on a fresh clone:
 
 ```
 data/
-├── make_example_data.py          # writes the three files below
-├── example/
-│   ├── food_df.example.csv       # 240 synthetic products, 30 columns
-│   ├── thesaurus.example.xlsx    # 34 surface-form -> descriptor mappings
-│   └── ingnut_df.example.csv     # 20 ingredients x 25 nutrients
+├── food_df.example.csv           # 104 real products, 24 columns
+├── thesaurus.xlsx                # the USDA Ingredient Thesaurus, all 25,671 rows
+├── ingnut_df.example.csv         # the paper's top-100 reference pool, 28 columns
+├── figure2.png                   # ingredient-feature diagram, used by the main README
 └── README.md
 ```
 
-The example numbers are drawn from arbitrary distributions and carry **no
-nutritional meaning**. They exist to exercise the code path, not to produce a
-result. Regenerate them with `python data/make_example_data.py`.
+The products are real — real USDA `fdc_id`, ingredient statements, label panels
+and calcium/fiber/iron values — so any row can be checked against FoodData
+Central. The thesaurus and the reference table are not samples at all: they are
+the paper's own, complete. All three USDA sources are public domain.
+
+## This example is not a result
+
+104 products reproduce nothing in the paper, and the draw is **deliberately
+balanced, not representative**. Products are stratified on the zero pattern of
+the three targets — which of calcium, iron and fiber are declared zero — the
+same eight cells the paper's split stratifies on, with 13 taken from each. Each
+target therefore comes out 52 zero / 52 non-zero.
+
+That is on purpose. Fiber is zero for only 5.5% of the real cohort (calcium
+42.1%, iron 20.2%), so an unstratified 104-row draw leaves one or two fiber
+zeros per cross-validation fold and the hurdle's Stage 1 classifier
+degenerates. Balancing the cells exercises both stages for all three nutrients.
+The cost is that zero rates here, and anything computed from them, say nothing
+about the cohort's composition.
+
+What *is* representative: `thesaurus.xlsx` and `ingnut_df.example.csv` are the
+paper's own tables, complete, so ingredient mapping and the reference profiles
+behave here exactly as they do on the full cohort. `umap_20` is the paper's
+train-fitted projection; `umap_2` and `umap_10` come from fitting UMAP on the
+cohort's training rows with the reported settings (`n_neighbors=30`,
+`min_dist=0.05`, seed 42) and projecting the sample through it.
+
+## Regenerating it
+
+`nutpred/make_example_data.py` draws the sample, but **it cannot run on a fresh
+clone** — it needs the cohort, which is not distributed. The invocation that
+produced the tracked files was:
+
+```bash
+python -m nutpred.make_example_data \
+  --cohort     snack_input_0222_fixed_umap20train.csv \
+  --embeddings snack_input_model_compare_0222_fixed.csv \
+  --thesaurus  THESAURUSFORPUBLICRELEASE.XLSX \
+  --ingnut     ingnut_df_top100_rankfixed.csv
+```
+
+Seed 42, 13 products per zero-pattern cell. Products carrying no ingredient
+embedding (438 of 14,019) are outside the pool, since they cannot be projected.
+Only the food table is sampled; the thesaurus is copied byte for byte, so
+`sha256 data/thesaurus.xlsx` is `10be9300…2c6f2910`, the checksum of the USDA
+release itself.
 
 ---
 
@@ -26,9 +69,9 @@ Every entry point takes its data by argument; nothing is hard-coded to a path.
 
 | Flag | What it is | Example file |
 |---|---|---|
-| `--food-df` | One row per packaged food: the label panel, the ingredient string, and precomputed UMAP embedding columns | `data/example/food_df.example.csv` |
-| `--thesaurus-df` | Maps surface ingredient spellings to preferred descriptors | `data/example/thesaurus.example.xlsx` |
-| `--ingnut-df` | Reference nutrient profile per preferred descriptor, used by the CVXPY optimizer | `data/example/ingnut_df.example.csv` |
+| `--food-df` | One row per packaged food: the label panel, the ingredient string, and precomputed UMAP embedding columns | `data/food_df.example.csv` |
+| `--thesaurus-df` | Maps surface ingredient spellings to preferred descriptors | `data/thesaurus.xlsx` |
+| `--ingnut-df` | Reference nutrient profile per preferred descriptor, used by the CVXPY optimizer | `data/ingnut_df.example.csv` |
 | `--yf-column` | Name of a column in `--food-df` holding per-ingredient yield factors; only for `--method yf_opt` | written by `nutpred.predict_yield_factors` |
 
 ### `--food-df`
@@ -90,7 +133,11 @@ case-insensitively against tokens split out of the `ingredients` string;
 `Preferred descriptor` is the normalized name that must also appear in the
 `ing` column of `--ingnut-df`.
 
-The real analysis used the USDA Ingredient Thesaurus (Ahuja et al., 2023).
+`data/thesaurus.xlsx` is the USDA Ingredient Thesaurus (Ahuja et al., 2023) as
+the analysis used it: all 25,671 surface forms over 3,042 preferred descriptors
+in 15 broad groups. Only a few hundred of those entries match any of the 104
+example labels, but shipping it whole means your own food table maps against
+the real vocabulary without downloading anything.
 
 ### `--ingnut-df`
 
@@ -107,51 +154,3 @@ The real analysis used the USDA Ingredient Thesaurus (Ahuja et al., 2023).
 `ing` must match the thesaurus's `Preferred descriptor`. `Rank` orders the
 ingredient vocabulary by corpus frequency and determines the top-K cut; the
 paper's pool is the top 100. Values are per 100 g of the ingredient.
-
----
-
-## Regenerating the real inputs
-
-The reported analysis used public, re-downloadable sources; none of them are
-redistributed here. `docs/data_provenance_methods.md` records exactly which
-releases were used and how they were retrieved.
-
-1. **USDA FoodData Central, Branded Foods** — bulk CSV export
-   (`food.csv`, `branded_food.csv`, `food_nutrient.csv`, `nutrient.csv`) from
-   <https://fdc.nal.usda.gov/download-datasets/>. Join on `fdc_id`, keep the
-   latest record per `gtin_upc` by `publication_date`, restrict to the snack
-   categories, and assemble the columns listed above. The cohort-construction
-   code is not distributed; the steps the reported cohort went through are in
-   `docs/data_provenance_methods.md`, which also notes that the exact release
-   used (December 2024) is an interim one FoodData Central no longer serves —
-   the archived 2024-10-31 and 2025-04-24 releases bracket it.
-
-2. **USDA SR Legacy** (April 2018, frozen) — the reference pool behind
-   `--ingnut-df`.
-
-3. **USDA Ingredient Thesaurus** — the controlled vocabulary behind
-   `--thesaurus-df`.
-
-4. **Ingredient features** — once the table above exists, one command adds all
-   three ingredient-derived feature groups:
-
-   ```bash
-   python -m nutpred.build_ingredient_features --all \
-     --in-csv  your_snack_table.csv \
-     --thesaurus-xlsx your_thesaurus.xlsx \
-     --top-k 100 --vocab-scope train \
-     --out-csv your_model_input.csv
-   ```
-
-   `--binary` / `--score` / `--embed` select the groups individually.
-   `--embed` calls the OpenAI embeddings API (cached to
-   `data/embedding_cache`, created on demand, so re-runs are free) and reduces to 20 dimensions;
-   `--embed-dims` changes that.
-
-   **Fitting uses train rows only.** Both `--embed` (UMAP) and
-   `--vocab-scope train` (vocabulary) compute the same split `run.py` makes
-   and fit on its train rows; `--embed` projects the other rows through the
-   fitted reducer. The split is saved as `SampleType`. `--embed` needs your
-   own OpenAI key on a cache miss: `--api-key-file <file>` or
-   `OPENAI_API_KEY`. `--vocab-scope train` also
-   reports how far the train-only vocabulary diverges from an all-rows one.

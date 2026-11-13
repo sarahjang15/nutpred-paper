@@ -36,15 +36,15 @@ The reported configuration, top-100 vocabulary ranked on train rows,
 embeddings reduced to 20 dimensions::
 
     python -m nutpred.build_ingredient_features --all \\
-      --in-csv data/example/food_df.example.csv \\
-      --thesaurus-xlsx data/example/thesaurus.example.xlsx \\
+      --in-csv data/food_df.example.csv \\
+      --thesaurus-xlsx data/thesaurus.xlsx \\
       --top-k 100 --vocab-scope train \\
       --out-csv data/model_input_features.csv
 
 Ingredient blocks only, vocabulary taken from the ingnut reference table::
 
     python -m nutpred.build_ingredient_features --binary --score \\
-      --vocab-csv data/example/ingnut_df.example.csv \\
+      --vocab-csv data/ingnut_df.example.csv \\
       --out-csv data/model_input_binscore.csv
 
 The embedding dimensionality ablation::
@@ -110,12 +110,12 @@ def main() -> None:
 
     io = ap.add_argument_group("input / output")
     io.add_argument("--in-csv", type=Path,
-                    default=ROOT / "data/example/food_df.example.csv")
+                    default=ROOT / "data/food_df.example.csv")
     io.add_argument("--out-csv", type=Path, required=True)
     io.add_argument("--out-vocab-csv", type=Path, default=None,
                     help="also write the ranked vocabulary with its counts")
     io.add_argument("--thesaurus-xlsx", type=Path,
-                    default=ROOT / "data/example/thesaurus.example.xlsx",
+                    default=ROOT / "data/thesaurus.xlsx",
                     help="ingredient thesaurus workbook (see data/README.md)")
 
     voc = ap.add_argument_group("vocabulary (--binary / --score)")

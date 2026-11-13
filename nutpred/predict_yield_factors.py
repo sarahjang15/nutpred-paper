@@ -27,8 +27,8 @@ Responses are cached per product under ``--cache-dir``, so a re-run costs
 nothing and an interrupted run resumes.
 
     python -m nutpred.predict_yield_factors \
-        --food-df data/example/food_df.example.csv \
-        --thesaurus-df data/example/thesaurus.example.xlsx \
+        --food-df data/food_df.example.csv \
+        --thesaurus-df data/thesaurus.xlsx \
         --api-key-file ~/openai_key.txt \
         --out-csv food_df_yf.csv
 
@@ -228,9 +228,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--food-df", type=Path,
-                    default=ROOT / "data/example/food_df.example.csv")
+                    default=ROOT / "data/food_df.example.csv")
     ap.add_argument("--thesaurus-df", type=Path,
-                    default=ROOT / "data/example/thesaurus.example.xlsx")
+                    default=ROOT / "data/thesaurus.xlsx")
     ap.add_argument("--out-csv", type=Path, required=True)
     ap.add_argument("--yf-col", default="pred_yield_factors",
                     help="name of the column written (pass it to --yf-column)")
